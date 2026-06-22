@@ -36,8 +36,14 @@ def main():
         "--icon=icon-whishper.ico",
         "--name=Lexora",
         f"--add-data={add_data_arg}",                 # Внедрение патча lightning_fabric
-        "--add-data=model_weights;model_weights",
         "--add-data=ffmpeg.exe;.",
+        # --add-data=model_weights;model_weights УБРАН: app.py читает веса
+        # по пути application_path/model_weights (рядом с exe), а не из
+        # _internal. Этот флаг только дублировал ~1.51GB весов внутрь
+        # _internal без всякой пользы, что и было основной причиной
+        # превышения лимита Inno Setup (~3.91GB) на единый Setup.exe.
+        # Папку model_weights нужно копировать в dist/Lexora ВРУЧНУЮ
+        # после сборки (как и раньше делалось) — см. сообщение ниже.
         "--collect-all=pyannote.audio",               # Полный сбор пакета со всеми модулями
         "--collect-all=speechbrain",                  # Полный сбор пакета (исправляет WinError 3)
         "app.py"
@@ -51,6 +57,8 @@ def main():
     
     if process.returncode == 0:
         print("\n[+] СБОРКА УСПЕШНО ЗАВЕРШЕНА.")
+        print("[!] ВАЖНО: model_weights больше не копируется автоматически.")
+        print("[!] Скопируй папку 'model_weights' вручную в 'dist/Lexora/model_weights' перед запуском/упаковкой.")
         print("[!] Проверь исполняемый файл в директории 'dist/Lexora/Lexora.exe'")
     else:
         print("\n[-] ОШИБКА СБОРКИ.")
