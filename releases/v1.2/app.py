@@ -6,7 +6,6 @@ import sys
 # ==============================================================================
 if getattr(sys, 'frozen', False):
     application_path = os.path.dirname(sys.executable)
-    # Переносим os.chdir на самый верх, НО жестко добавляем _internal в sys.path
     _internal_path = os.path.join(application_path, "_internal")
     if _internal_path not in sys.path:
         sys.path.insert(0, _internal_path)
@@ -16,6 +15,31 @@ else:
 
 # Устанавливаем рабочую директорию
 os.chdir(application_path)
+
+# ==============================================================================
+# ФИКС WinError 448 (RCA: см. NOTES — общий пользовательский HF/torch-кэш
+# в %USERPROFILE%\.cache хранит symlink на путь ПОСЛЕДНЕЙ запускавшейся
+# копии приложения. Перемещение/удаление этой копии делает symlink
+# недостижимым для всех ОСТАЛЬНЫХ копий (включая установленную через
+# Inno Setup), вызывая WinError 448 при попытке прочитать diarization-веса.
+#
+# Решение: переопределяем переменные окружения, отвечающие за расположение
+# HF/torch кэша, на путь ВНУТРИ самого приложения (application_path),
+# ДО импорта speechbrain/pyannote/huggingface_hub. Каждая копия приложения
+# получает собственный, независимый кэш — общий путь больше не используется.
+#
+# ИЗВЕСТНЫЙ ОСТАТОЧНЫЙ РИСК (зафиксирован, не устранён в этой версии):
+# Установленная копия в Program Files может не иметь прав на запись
+# в application_path для обычного (непривилегированного) пользователя.
+# Если это проявится — потребуется fallback на %LOCALAPPDATA%, который
+# в этой версии патча сознательно не реализован.
+# ==============================================================================
+_local_cache_dir = os.path.join(application_path, ".cache")
+os.environ["HF_HOME"] = _local_cache_dir
+os.environ["TORCH_HOME"] = _local_cache_dir
+os.environ["XDG_CACHE_HOME"] = _local_cache_dir
+os.environ["HF_HUB_CACHE"] = _local_cache_dir
+os.makedirs(_local_cache_dir, exist_ok=True)
 
 # ==============================================================================
 # СТАНДАРТНЫЕ ИМПОРТЫ И БЛОКИРОВКА СЕТИ
@@ -48,7 +72,7 @@ sys.modules["k2"] = types.ModuleType("k2")
 import speechbrain.utils.fetching
 import speechbrain.inference.interfaces
 
-# --- ПАТЧ А: Отключение симлинков (Фикс WinError 448) ---
+# --- ПАТЧ А: Отключение симлинков (Фикс WinError 448, первая линия защиты) ---
 _original_fetch = speechbrain.utils.fetching.fetch
 
 def _direct_local_fetch(filename, source, *args, **kwargs):
@@ -67,12 +91,12 @@ original_pretrained_from_hparams = speechbrain.inference.interfaces.pretrained_f
 def patched_pretrained_from_hparams(*args, **kwargs):
     kwargs.pop("use_auth_token", None)
     kwargs.pop("revision", None)
-    
+
     if "run_opts" in kwargs and kwargs["run_opts"] is not None:
         if "device" in kwargs["run_opts"]:
             if isinstance(kwargs["run_opts"]["device"], torch.device):
                 kwargs["run_opts"]["device"] = str(kwargs["run_opts"]["device"])
-                
+
     return original_pretrained_from_hparams(*args, **kwargs)
 
 speechbrain.inference.interfaces.pretrained_from_hparams = patched_pretrained_from_hparams
@@ -117,7 +141,7 @@ class LexoraApp(DnDCTk):
         self.transcribed_segments = []
         self.current_audio_path = None
         self.is_running = False
-        
+
         self.show_time_var = ctk.BooleanVar(value=True)
         self.use_roles_var = ctk.BooleanVar(value=False)
 
@@ -134,7 +158,7 @@ class LexoraApp(DnDCTk):
         self.btn_copy.pack(side="left", padx=5)
 
         self.switch_timecodes = ctk.CTkSwitch(
-            self.top_frame, text="Таймкоды", 
+            self.top_frame, text="Таймкоды",
             variable=self.show_time_var,
             command=self.redraw_interface
         )
@@ -162,18 +186,18 @@ class LexoraApp(DnDCTk):
     def redraw_interface(self):
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
-        
+
         for start, end, text in self.transcribed_segments:
             line = f"[{self.format_time(start)} -> {self.format_time(end)}] {text}\n" if self.show_time_var.get() else f"{text}\n"
             self.textbox.insert("end", line)
-            
+
         self.textbox.see("end")
         self.textbox.configure(state="disabled")
 
     def append_segment_ui(self, start, end, text):
         self.transcribed_segments.append((start, end, text))
         line = f"[{self.format_time(start)} -> {self.format_time(end)}] {text}\n" if self.show_time_var.get() else f"{text}\n"
-        
+
         self.textbox.configure(state="normal")
         self.textbox.insert("end", line)
         self.textbox.see("end")
@@ -203,7 +227,7 @@ class LexoraApp(DnDCTk):
         if self.is_running:
             messagebox.showwarning("Внимание", "Дождитесь окончания текущей транскрибации!")
             return
-        
+
         files = self.tk.splitlist(event.data)
         if files:
             self.start_processing(files[0])
@@ -214,20 +238,20 @@ class LexoraApp(DnDCTk):
                 title="Выберите аудио/видео файл",
                 filetypes=[("Media Files", "*.mp3 *.wav *.m4a *.mp4 *.mkv"), ("All Files", "*.*")]
             )
-        
+
         if not filepath:
             return
 
         self.current_audio_path = filepath
         self.transcribed_segments.clear()
         self.is_running = True
-        
+
         use_diarization = self.use_roles_var.get()
-        
+
         self.btn_select.configure(state="disabled")
         self.btn_stop.configure(state="normal")
-        self.switch_diarization.configure(state="disabled") 
-        
+        self.switch_diarization.configure(state="disabled")
+
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
         self.textbox.configure(state="disabled")
@@ -240,14 +264,14 @@ class LexoraApp(DnDCTk):
     def _convert_to_wav(self, input_file):
         """Конвертирует любой медиафайл в 16kHz Mono WAV через FFmpeg."""
         temp_fd, temp_path = tempfile.mkstemp(suffix=".wav")
-        os.close(temp_fd) 
-        
+        os.close(temp_fd)
+
         command = [
             "ffmpeg", "-y", "-i", input_file,
             "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             temp_path
         ]
-        
+
         startupinfo = None
         if os.name == 'nt':
             startupinfo = subprocess.STARTUPINFO()
@@ -261,14 +285,14 @@ class LexoraApp(DnDCTk):
         whisper_model = None
         diarize_model = None
         temp_wav_path = None
-        
+
         try:
             self.after(0, self.system_log_ui, "[*] Извлечение и нормализация аудио (FFmpeg)...")
             temp_wav_path = self._convert_to_wav(audio_file)
             audio_file = temp_wav_path
 
             self.after(0, self.system_log_ui, f"[*] Инициализация оборудования: {device.upper()}")
-            
+
             if use_diarization:
                 self.after(0, self.system_log_ui, "[*] Загрузка локальной модели Pyannote (Разделение ролей)...")
                 try:
@@ -284,23 +308,23 @@ class LexoraApp(DnDCTk):
 
             self.after(0, self.system_log_ui, "[*] Загрузка локальной модели Whisper...")
             whisper_model = WhisperModel(WHISPER_MODEL_PATH, device=device, compute_type="float16" if device == "cuda" else "int8")
-            
+
             if not self.is_running: return
 
             self.after(0, self.system_log_ui, "\n[*] Транскрибация аудио (Потоковый вывод):")
             segments, info = whisper_model.transcribe(audio_file, beam_size=5)
             duration = info.duration
-            
+
             # ЭТАП 1: Транскрибация
             for segment in segments:
                 if not self.is_running: break
-                
+
                 self.after(0, self.append_segment_ui, segment.start, segment.end, segment.text.strip())
-                
+
                 progress_val = min(segment.end / duration, 1.0)
                 ui_progress = progress_val * 0.8 if use_diarization else progress_val
                 self.after(0, self.progressbar.set, ui_progress)
-                
+
             if not self.is_running: return
             self.after(0, self.system_log_ui, f"\n[+] Транскрибация завершена.")
 
@@ -308,9 +332,9 @@ class LexoraApp(DnDCTk):
             if use_diarization and diarize_model:
                 self.after(0, self.system_log_ui, "\n[*] Запуск разделения по ролям (Pyannote). Пожалуйста, подождите...")
                 diarization_result = diarize_model(audio_file)
-                
+
                 if not self.is_running: return
-                
+
                 final_segments = []
                 for start, end, text in self.transcribed_segments:
                     max_overlap = 0
@@ -320,10 +344,10 @@ class LexoraApp(DnDCTk):
                         if overlap > max_overlap:
                             max_overlap = overlap
                             best_speaker = speaker
-                    
+
                     speaker_prefix = f"[{best_speaker}] " if best_speaker != "UNKNOWN" else ""
                     final_segments.append((start, end, speaker_prefix + text))
-                
+
                 self.transcribed_segments = final_segments
                 self.after(0, self.system_log_ui, "[+] Разделение ролей завершено. Обновление интерфейса...\n")
                 self.after(0, self.redraw_interface)
@@ -334,20 +358,20 @@ class LexoraApp(DnDCTk):
 
         except Exception as e:
             self.after(0, self.system_log_ui, f"\n[-] КРИТИЧЕСКАЯ ОШИБКА:\n{traceback.format_exc()}")
-        
+
         finally:
             self.is_running = False
             del whisper_model
             del diarize_model
             gc.collect()
             if device == "cuda": torch.cuda.empty_cache()
-            
+
             if temp_wav_path and os.path.exists(temp_wav_path):
                 try:
                     os.remove(temp_wav_path)
                 except Exception:
                     pass
-            
+
             def reset_ui():
                 self.btn_select.configure(state="normal")
                 self.btn_stop.configure(state="disabled")
