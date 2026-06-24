@@ -9,110 +9,215 @@ if getattr(sys, 'frozen', False):
     _internal_path = os.path.join(application_path, "_internal")
     if _internal_path not in sys.path:
         sys.path.insert(0, _internal_path)
-    os.environ["PATH"] += os.pathsep + application_path
+    # ФИКС (аудит, H3): application_path добавляется в НАЧАЛО PATH, а не в конец.
+    # Старое поведение (PATH += application_path) ставило системный ffmpeg.exe
+    # (если он есть на машине пользователя) выше вшитой версии при резолве по
+    # PATH, что давало непредсказуемый дрейф версий ffmpeg между машинами.
+    # Основной фикс — прямой абсолютный путь к ffmpeg.exe в _convert_to_wav()
+    # (см. FFMPEG_PATH ниже). Изменение PATH оставлено как defense-in-depth для
+    # любых сторонних библиотек, которые могут искать "ffmpeg" по PATH сами.
+    os.environ["PATH"] = application_path + os.pathsep + os.environ["PATH"]
 else:
     application_path = os.path.dirname(os.path.abspath(__file__))
 
-# Устанавливаем рабочую директорию
+# Устанавливаем рабочую директорию.
+# Порядок зафиксирован в DO-NOT-TOUCH (Lexora_Technical_Report_v1.2, §2):
+# ПОСЛЕ внедрения _internal в sys.path, ДО импорта speechbrain/pyannote.
+# Сохранён без изменений.
 os.chdir(application_path)
 
 # ==============================================================================
-# ФИКС WinError 448 (RCA: см. NOTES — общий пользовательский HF/torch-кэш
-# в %USERPROFILE%\.cache хранит symlink на путь ПОСЛЕДНЕЙ запускавшейся
-# копии приложения. Перемещение/удаление этой копии делает symlink
-# недостижимым для всех ОСТАЛЬНЫХ копий (включая установленную через
-# Inno Setup), вызывая WinError 448 при попытке прочитать diarization-веса.
-#
-# Решение: переопределяем переменные окружения, отвечающие за расположение
-# HF/torch кэша, на путь ВНУТРИ самого приложения (application_path),
-# ДО импорта speechbrain/pyannote/huggingface_hub. Каждая копия приложения
-# получает собственный, независимый кэш — общий путь больше не используется.
-#
-# ИЗВЕСТНЫЙ ОСТАТОЧНЫЙ РИСК (зафиксирован, не устранён в этой версии):
-# Установленная копия в Program Files может не иметь прав на запись
-# в application_path для обычного (непривилегированного) пользователя.
-# Если это проявится — потребуется fallback на %LOCALAPPDATA%, который
-# в этой версии патча сознательно не реализован.
+# ФИКС (аудит, M2): locale-патч перенесён в самое начало файла, сразу после
+# `import locale`, ДО любых импортов сторонних библиотек (customtkinter, torch,
+# tkinterdnd2, faster_whisper, speechbrain). Раньше патч стоял ПОСЛЕ этих
+# импортов. На текущий момент это не вызывало видимого бага, т.к. config.yaml
+# читается значительно позже, в runtime, когда патч уже был активен — но этот
+# порядок был случайным, а не гарантированным. Любая будущая библиотека,
+# читающая UTF-8/кириллический файл на этапе СВОЕГО импорта, могла бы тихо
+# воспроизвести UnicodeDecodeError на Windows (где getpreferredencoding()
+# по умолчанию часто возвращает не utf-8).
 # ==============================================================================
-_local_cache_dir = os.path.join(application_path, ".cache")
-os.environ["HF_HOME"] = _local_cache_dir
-os.environ["TORCH_HOME"] = _local_cache_dir
-os.environ["XDG_CACHE_HOME"] = _local_cache_dir
-os.environ["HF_HUB_CACHE"] = _local_cache_dir
-os.makedirs(_local_cache_dir, exist_ok=True)
-
-# ==============================================================================
-# СТАНДАРТНЫЕ ИМПОРТЫ И БЛОКИРОВКА СЕТИ
-# ==============================================================================
-import threading
-import gc
-import traceback
-import types
-import tempfile
-import subprocess
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
-import torch
-from tkinterdnd2 import TkinterDnD, DND_FILES
-from faster_whisper import WhisperModel
-
-# Жесткая блокировка сети
-os.environ["HF_HUB_OFFLINE"] = "1"
-
-# Фикс кодировки Windows для чтения config.yaml
 import locale
 locale.getpreferredencoding = lambda *args: 'utf-8'
 
-# Заглушка для k2 (отключение ленивого поиска C++ компиляторов)
-sys.modules["k2"] = types.ModuleType("k2")
-
 # ==============================================================================
-# ДИНАМИЧЕСКИЕ ПАТЧИ SPEECHBRAIN (БЕЗ СИМЛИНКОВ И С УДАЛЕНИЕМ AUTH_TOKEN)
+# ФИКС (аудит, C1): безопасная инициализация локального кэша + перехват ошибок
+# инициализации.
+#
+# ИСТОРИЯ ПРОБЛЕМЫ (WinError 448 / 1314, см. Lexora_Technical_Report_v1.2, §10):
+# SpeechBrain хранит diarization-кэш как symlink в общем пользовательском
+# каталоге %USERPROFILE%\.cache, указывающий на путь ПОСЛЕДНЕЙ запускавшейся
+# копии приложения. Решение 1.2 — переопределить HF_HOME/TORCH_HOME/
+# XDG_CACHE_HOME/HF_HUB_CACHE на application_path\.cache, ДО импорта
+# speechbrain/pyannote/huggingface_hub. Это устранило 448 и 1314, но
+# зафиксированный остаточный риск (1.2, §11 Open Items) был: application_path
+# при установке через Inno Setup указывает на Program Files, куда обычный
+# непривилегированный пользовательский токен не имеет прав записи.
+#
+# АУДИТ: этот риск НЕ краевой случай. Секция [Run] в Lexora_inst.iss
+# использует `runascurrentuser`, из-за чего ЕДИНСТВЕННЫЙ автозапуск Lexora.exe
+# сразу после установки наследует элевированный токен самого Setup
+# (PrivilegesRequired=admin по умолчанию) и тихо успешно создаёт .cache. ЛЮБОЙ
+# другой запуск (Start Menu, ярлык на рабочем столе, повторный запуск позже,
+# тихая/silent установка с пропуском автозапуска, другой пользователь Windows)
+# выполняется НЕ элевированным токеном и упадёт с PermissionError при попытке
+# os.makedirs() внутрь Program Files. Это объясняет, почему Test Matrix v1.2
+# показывает PASS для "машины без прав администратора" — тест прошёл happy
+# path (установка -> автозапуск -> кэш тихо засеян элевированным токеном),
+# а не холодный неэлевированный первый запуск, который Open Items прямо
+# называет непротестированным.
+#
+# ФИКС: пробуем application_path\.cache; при отказе записи — fallback на
+# %LOCALAPPDATA%\Lexora\cache (всегда доступен на запись текущему пользователю
+# независимо от элевации). Весь блок инициализации обёрнут в try/except —
+# раньше любое исключение здесь было необработанным и приводило к полностью
+# тихому краху при старте под --windowed (нет консоли для traceback).
 # ==============================================================================
-import speechbrain.utils.fetching
-import speechbrain.inference.interfaces
+def _crash_log_startup_failure():
+    """Логирует фатальную ошибку инициализации и показывает MessageBox.
+    Используется ctypes.MessageBoxW, а не tkinter.messagebox, так как на этом
+    этапе интерпретатор Tk может быть ещё не инициализирован (ошибка может
+    произойти до импорта customtkinter)."""
+    import traceback
+    import datetime
+    log_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    log_path = os.path.join(log_root, "Lexora", "startup_crash.log")
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.datetime.now()}]\n{traceback.format_exc()}\n")
+    except Exception:
+        pass
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"Lexora не удалось запустить.\nПодробности записаны в лог:\n{log_path}",
+            "Lexora — ошибка запуска",
+            0x10  # MB_ICONERROR
+        )
+    except Exception:
+        pass
 
-# --- ПАТЧ А: Отключение симлинков (Фикс WinError 448, первая линия защиты) ---
-_original_fetch = speechbrain.utils.fetching.fetch
 
-def _direct_local_fetch(filename, source, *args, **kwargs):
-    """Принудительно возвращает прямой локальный путь, обходя создание symlink/junction."""
-    if isinstance(source, str) and os.path.isdir(source):
-        local_file = os.path.join(source, filename)
-        if os.path.exists(local_file):
-            return local_file
-    return _original_fetch(filename, source, *args, **kwargs)
+def _init_cache_dir():
+    """Возвращает рабочий, доступный на запись каталог кэша.
+    Приоритет 1: application_path\\.cache (изолирует кэш каждой копии
+    приложения, фикс WinError 448 из v1.2).
+    Приоритет 2 (fallback): %LOCALAPPDATA%\\Lexora\\cache — используется,
+    если application_path недоступен на запись текущему токену (типичный
+    случай для Program Files без элевации)."""
+    primary = os.path.join(application_path, ".cache")
+    try:
+        os.makedirs(primary, exist_ok=True)
+        probe = os.path.join(primary, ".write_test")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+        return primary
+    except OSError:
+        fallback_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        fallback = os.path.join(fallback_root, "Lexora", "cache")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
 
-speechbrain.utils.fetching.fetch = _direct_local_fetch
 
-# --- ПАТЧ Б: Устранение конфликта версий Pyannote 3.x и SpeechBrain 1.x ---
-original_pretrained_from_hparams = speechbrain.inference.interfaces.pretrained_from_hparams
+try:
+    _local_cache_dir = _init_cache_dir()
+    os.environ["HF_HOME"] = _local_cache_dir
+    os.environ["TORCH_HOME"] = _local_cache_dir
+    os.environ["XDG_CACHE_HOME"] = _local_cache_dir
+    os.environ["HF_HUB_CACHE"] = _local_cache_dir
 
-def patched_pretrained_from_hparams(*args, **kwargs):
-    kwargs.pop("use_auth_token", None)
-    kwargs.pop("revision", None)
+    # ==========================================================================
+    # СТАНДАРТНЫЕ ИМПОРТЫ И БЛОКИРОВКА СЕТИ
+    # ==========================================================================
+    import threading
+    import gc
+    import traceback
+    import types
+    import tempfile
+    import subprocess
+    import customtkinter as ctk
+    from tkinter import filedialog, messagebox
+    import torch
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    from faster_whisper import WhisperModel
 
-    if "run_opts" in kwargs and kwargs["run_opts"] is not None:
-        if "device" in kwargs["run_opts"]:
-            if isinstance(kwargs["run_opts"]["device"], torch.device):
-                kwargs["run_opts"]["device"] = str(kwargs["run_opts"]["device"])
+    # Жесткая блокировка сети
+    os.environ["HF_HUB_OFFLINE"] = "1"
 
-    return original_pretrained_from_hparams(*args, **kwargs)
+    # Заглушка для k2 (отключение ленивого поиска C++ компиляторов).
+    # АУДИТ (M1): прямой грепинг исходников speechbrain==1.1.0 и
+    # pyannote.audio==3.3.1 подтвердил, что настоящий пакет `k2` импортируется
+    # ТОЛЬКО внутри необязательного сабмодуля speechbrain.integrations.k2_fsa
+    # (защищён собственным try/except ImportError) и НЕ затрагивается рабочим
+    # путём Pretrained.from_hparams / fetching / diarization, который
+    # использует это приложение. На этих закреплённых версиях заглушка
+    # подтверждённо неактивна (inert). Оставлена как defense-in-depth —
+    # ПЕРЕПРОВЕРИТЬ при любом обновлении speechbrain/pyannote.audio (нет
+    # lock-файла версий — см. рекомендацию по requirements-lock.txt, риск
+    # тихой поломки при пересборке окружения на новых версиях).
+    sys.modules["k2"] = types.ModuleType("k2")
 
-speechbrain.inference.interfaces.pretrained_from_hparams = patched_pretrained_from_hparams
+    # ==========================================================================
+    # ДИНАМИЧЕСКИЕ ПАТЧИ SPEECHBRAIN (БЕЗ СИМЛИНКОВ И С УДАЛЕНИЕМ AUTH_TOKEN)
+    # ==========================================================================
+    import speechbrain.utils.fetching
+    import speechbrain.inference.interfaces
 
-_original_from_hparams = speechbrain.inference.interfaces.Pretrained.from_hparams
+    # --- ПАТЧ А: Отключение симлинков ---
+    # АУДИТ (M1): согласно Lexora_Technical_Report_v1.2 (§8), этот патч
+    # понижен со статуса Experimental до "Known Limited Effect" — он НЕ
+    # перехватывает фактический путь инициализации diarization (кэш в
+    # %USERPROFILE%\.cache использовался независимо от этого патча; реальный
+    # фикс WinError 448 — переопределение HF_HOME/TORCH_HOME выше, в C1).
+    # Патч сохранён как безвредный defense-in-depth слой, а не как рабочий
+    # фикс сам по себе.
+    _original_fetch = speechbrain.utils.fetching.fetch
 
-@classmethod
-def _patched_from_hparams(cls, *args, **kwargs):
-    """Перехватывает инициализацию и удаляет устаревший аргумент."""
-    kwargs.pop('use_auth_token', None)
-    return _original_from_hparams.__func__(cls, *args, **kwargs)
+    def _direct_local_fetch(filename, source, *args, **kwargs):
+        """Принудительно возвращает прямой локальный путь, обходя создание symlink/junction."""
+        if isinstance(source, str) and os.path.isdir(source):
+            local_file = os.path.join(source, filename)
+            if os.path.exists(local_file):
+                return local_file
+        return _original_fetch(filename, source, *args, **kwargs)
 
-speechbrain.inference.interfaces.Pretrained.from_hparams = _patched_from_hparams
+    speechbrain.utils.fetching.fetch = _direct_local_fetch
 
-# Импортируем Pipeline строго после всех фиксов среды
-from pyannote.audio import Pipeline
+    # --- ПАТЧ Б: Устранение конфликта версий Pyannote 3.x и SpeechBrain 1.x ---
+    original_pretrained_from_hparams = speechbrain.inference.interfaces.pretrained_from_hparams
+
+    def patched_pretrained_from_hparams(*args, **kwargs):
+        kwargs.pop("use_auth_token", None)
+        kwargs.pop("revision", None)
+
+        if "run_opts" in kwargs and kwargs["run_opts"] is not None:
+            if "device" in kwargs["run_opts"]:
+                if isinstance(kwargs["run_opts"]["device"], torch.device):
+                    kwargs["run_opts"]["device"] = str(kwargs["run_opts"]["device"])
+
+        return original_pretrained_from_hparams(*args, **kwargs)
+
+    speechbrain.inference.interfaces.pretrained_from_hparams = patched_pretrained_from_hparams
+
+    _original_from_hparams = speechbrain.inference.interfaces.Pretrained.from_hparams
+
+    @classmethod
+    def _patched_from_hparams(cls, *args, **kwargs):
+        """Перехватывает инициализацию и удаляет устаревший аргумент."""
+        kwargs.pop('use_auth_token', None)
+        return _original_from_hparams.__func__(cls, *args, **kwargs)
+
+    speechbrain.inference.interfaces.Pretrained.from_hparams = _patched_from_hparams
+
+    # Импортируем Pipeline строго после всех фиксов среды
+    from pyannote.audio import Pipeline
+
+except Exception:
+    _crash_log_startup_failure()
+    sys.exit(1)
 
 # ==============================================================================
 # ОСНОВНАЯ ЛОГИКА ПРИЛОЖЕНИЯ
@@ -123,10 +228,19 @@ ctk.set_default_color_theme("blue")
 WHISPER_MODEL_PATH = os.path.join(application_path, "model_weights", "medium")
 DIARIZATION_CONFIG_PATH = os.path.join(application_path, "model_weights", "diarization", "config.yaml")
 
+# ФИКС (аудит, H3): абсолютный путь к ffmpeg.exe вместо резолва через PATH.
+# Раньше subprocess.run(["ffmpeg", ...]) резолвился через системный PATH —
+# если на машине пользователя уже был установлен другой ffmpeg.exe, он мог
+# получить приоритет над вшитой, протестированной версией. Прямой абсолютный
+# путь убирает зависимость от окружения полностью.
+FFMPEG_PATH = os.path.join(application_path, "ffmpeg.exe")
+
+
 class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.TkdndVersion = TkinterDnD._require(self)
+
 
 class LexoraApp(DnDCTk):
     def __init__(self):
@@ -267,7 +381,7 @@ class LexoraApp(DnDCTk):
         os.close(temp_fd)
 
         command = [
-            "ffmpeg", "-y", "-i", input_file,
+            FFMPEG_PATH, "-y", "-i", input_file,
             "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             temp_path
         ]
@@ -391,6 +505,7 @@ class LexoraApp(DnDCTk):
             self.after(0, self.system_log_ui, f"\n[+] Сохранено: {output_txt}")
         except Exception as e:
             self.after(0, self.system_log_ui, f"\n[-] Ошибка сохранения: {str(e)}")
+
 
 if __name__ == "__main__":
     app = LexoraApp()

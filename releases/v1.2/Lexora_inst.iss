@@ -62,5 +62,17 @@ Source: "D:\Desktop\Whisper_Build_Project\dist\Lexora\ffmpeg.exe"; DestDir: "{ap
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+; АУДИТ (C1): runascurrentuser означает, что этот автозапуск наследует
+; учётные данные самого Setup (PrivilegesRequired=admin по умолчанию,
+; не переопределён выше) — то есть этот ОДИН конкретный запуск Lexora.exe
+; будет элевированным, и .cache под application_path создастся без проблем.
+; ЛЮБОЙ другой запуск (ярлык, повторный запуск, silent-установка с
+; skipifsilent, другой пользователь Windows) будет НЕ элевированным.
+; Эта секция оставлена БЕЗ изменений намеренно: правильное место для фикса —
+; не повышение прав на установщике/первом запуске (это ухудшило бы UX,
+; заставляя каждый запуск проходить через UAC), а fallback-логика в самом
+; app.py (см. _init_cache_dir() — пробует application_path\.cache, при
+; отказе переключается на %LOCALAPPDATA%\Lexora\cache). Фикс C1 полностью
+; находится в app.py; здесь функциональных изменений не требуется.
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
