@@ -1,0 +1,14 @@
+pipeline:
+  name: pyannote.audio.pipelines.SpeakerDiarization
+  params:
+    clustering: AgglomerativeClustering
+    embedding: model_weights/diarization/speechbrain
+    segmentation: model_weights/diarization/segmentation/pytorch_model.bin
+
+params:
+  clustering:
+    method: centroid
+    min_cluster_size: 12
+    threshold: 0.7045654963945799
+  segmentation:
+    min_duration_off: 0.0
