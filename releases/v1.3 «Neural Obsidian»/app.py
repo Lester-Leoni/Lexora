@@ -121,47 +121,6 @@ try:
 
     # ==========================================================================
     # ФИКС: speechbrain LazyModule — ложное срабатывание lazy-импорта на Windows
-    #
-    # ПОДТВЕРЖДЕНО реальным traceback (startup_crash.log) и прямой проверкой
-    # исходника speechbrain==1.1.0 (speechbrain/utils/importutils.py).
-    #
-    # Механизм: speechbrain.__init__ вызывает lazy_export_all(), который
-    # регистрирует свои опциональные сабпакеты (включая
-    # speechbrain.integrations.nlp, оборачивающий spacy) как LazyModule —
-    # заглушки, которые импортируются по-настоящему только при первом
-    # реальном обращении к атрибуту. У LazyModule.ensure_module() есть
-    # собственная защита именно от случайного срабатывания такой заглушки
-    # из чужого кода — их же комментарий: "some of PyTorch's op registering
-    # machinery" может непреднамеренно дёрнуть атрибут лениво
-    # зарегистрированного модуля. Защита проверяет
-    # `importer_frame.filename.endswith("/inspect.py")` — с захардкоженным
-    # forward slash. На Windows inspect.py репортит путь с backslash
-    # (C:\...\Lib\inspect.py), поэтому проверка никогда не совпадает.
-    #
-    # Реальная цепочка из вашего traceback: `from pyannote.audio import
-    # Pipeline` -> pytorch_lightning -> lightning_fabric -> torch._dynamo ->
-    # torch.distributed.tensor регистрирует fake-ops через
-    # torch.library.register_fake -> внутри вызывается
-    # inspect.getframeinfo() -> inspect.findsource() -> inspect.getmodule()
-    # -> hasattr(module, '__file__') ПЕРЕБИРАЕТ sys.modules, попадает на
-    # LazyModule для speechbrain.integrations.nlp -> защита speechbrain не
-    # срабатывает (баг выше) -> модуль реально импортируется ->
-    # speechbrain/integrations/nlp/spacy_pipeline.py делает `import spacy` ->
-    # ModuleNotFoundError, т.к. spacy не установлен (и не должен быть —
-    # никакого отношения к транскрибации/диаризации не имеет).
-    #
-    # ФИКС ниже добавляет ту же самую защитную проверку, но
-    # платформонезависимую (os.path.basename вместо .endswith("/...")), и
-    # выполняет её ДО вызова оригинального ensure_module. Если проверка не
-    # сработала — оригинальный метод вызывается без изменений в его
-    # собственной логике импорта.
-    #
-    # Альтернатива (доустановка spacy) сознательно не выбрана: spacy тянет
-    # отдельный кластер зависимостей (blis, cymem, srsly, weasel, thinc,
-    # catalogue, confection, murmurhash, preshed) ради функциональности,
-    # которая Lexora не используется и не нужна, и которую мы explicitly
-    # пытаемся не раздувать дальше (см. v1.3 roadmap, п.2.1 про объём
-    # дистрибутива).
     # ==========================================================================
     import inspect
     import speechbrain.utils.importutils
@@ -177,7 +136,7 @@ try:
         except AttributeError:
             raise
         except Exception:
-            pass  # не мешаем оригиналу — он сам корректно обработает прочие случаи
+            pass
         return _original_ensure_module(self, stacklevel)
 
     _sb_importutils.LazyModule.ensure_module = _patched_ensure_module
@@ -190,48 +149,24 @@ except Exception:
 
 # ==============================================================================
 # ВИЗУАЛЬНАЯ СИСТЕМА "NEURAL OBSIDIAN"
-#
-# ПРИМЕЧАНИЕ ПО СОГЛАСОВАНИЮ ИСХОДНИКОВ (image-мокап vs Инструкция_вид.txt):
-# Текстовая инструкция ссылается на ключи THEME_NEURAL_OBSIDIAN["window_bg"],
-# ["frame_bg"], ["card_bg"], ["cyan_neon"], ["cyan_dim"], ["text_main"], но
-# сама не определяет их значения. Мокап определяет НЕ СОВПАДАЮЩИЙ по именам
-# словарь NEURAL_OBSIDIAN_THEME = {fg_color, bg_color, border_color,
-# accent_color, text_color, corner_radius, border_width, glow_strength} —
-# то есть имена ключей в двух источниках не идентичны. Ниже — единый словарь,
-# использующий ИМЕНА ключей из текстовой инструкции (поскольку именно она
-# описывает, как ключи используются в коде виджетов) и ЦВЕТА из мокапа, где
-# они однозначно сопоставимы. Значения, которых нет ни в одном источнике
-# явно (cyan_dim, frame_bg как отдельный от card_bg слой), интерполированы и
-# помечены ниже как ASSUMPTION.
-#
-# Также: glow_strength="High (CSS-like spread)" из мокапа физически не
-# реализуем как мягкое размытие в Tkinter/Canvas без растровых ассетов с
-# альфа-градиентом (нет аналога CSS box-shadow/blur). Приближение —
-# увеличенная ширина яркой неоновой рамки на активном состоянии; ниже
-# реализовано именно так.
 # ==============================================================================
 
 THEME_NEURAL_OBSIDIAN = {
-    "window_bg":  ("#FFFFFF", "#0A0A0C"),   # из мокапа: bg_color
-    "frame_bg":   ("#F2F2F4", "#13131A"),   # ASSUMPTION: промежуточный слой между window_bg и card_bg, не задан явно
-    "card_bg":    ("#FFFFFF", "#1A1D21"),   # из мокапа, п.2.3 (S2: fg_color=#1A1D21)
-    "cyan_neon":  ("#0089A0", "#00F0FF"),   # из мокапа: border_color/accent_color; для светлой темы — затемнённый вариант ради контраста на белом фоне
-    "cyan_dim":   ("#9FD6DC", "#0F4C56"),   # ASSUMPTION: притушенная версия cyan_neon для состояния Idle, явного значения нет ни в одном источнике
-    "navy_card":  ("#DCEAF2", "#003366"),   # из мокапа, п.2.3 (S1: fg_color=#003366)
-    "text_main":  ("#101014", "#F0F0F0"),   # из мокапа: text_color
+    "window_bg":  ("#FFFFFF", "#0A0A0C"),
+    "frame_bg":   ("#F2F2F4", "#13131A"),
+    "card_bg":    ("#FFFFFF", "#1A1D21"),
+    "cyan_neon":  ("#0089A0", "#00F0FF"),
+    "cyan_dim":   ("#9FD6DC", "#0F4C56"),
+    "navy_card":  ("#DCEAF2", "#003366"),
+    "text_main":  ("#101014", "#F0F0F0"),
     "text_dim":   ("#5A5A60", "#9A9AA2"),
 }
 
-CORNER_RADIUS_DEFAULT = 12   # из мокапа (NEURAL_OBSIDIAN_THEME["corner_radius"])
-CORNER_RADIUS_DROPZONE = 16  # из текстовой инструкции, п.3.2 — отличается от дефолта мокапа, оставлено как есть (контекстное переопределение)
+CORNER_RADIUS_DEFAULT = 12
+CORNER_RADIUS_DROPZONE = 16
 BORDER_WIDTH_DEFAULT = 2
 
 FONT_DIR = os.path.join(application_path, "fonts")
-# Consolas физически предустановлен в Windows практически всегда (поставляется
-# с Office/Visual Studio Common Components, входит в стандартный набор с
-# Windows 10+) — load_font() для него, как правило, no-op, но вызов безвреден
-# и оставлен для машин, где Consolas всё же отсутствует. Inter — НЕ системный
-# шрифт Windows, поэтому бандлинг через FontManager для него обязателен.
 for _font_file in ("Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf", "consola.ttf"):
     _font_path = os.path.join(FONT_DIR, _font_file)
     if os.path.exists(_font_path):
@@ -246,16 +181,6 @@ FONT_MONO_BOLD = None
 
 
 def _init_fonts():
-    """ctk.CTkFont() оборачивает настоящий tkinter.font.Font, который при
-    создании вызывает tkinter._get_default_root() — это падает с
-    RuntimeError("Too early to use font: no default root window"), если ни
-    один объект ctk.CTk()/Tk() ещё не создан. На уровне модуля (как было
-    раньше) root-окна ещё не существует — оно появляется только при
-    инструировании LexoraApp(). Поэтому фактическое создание CTkFont
-    перенесено сюда и вызывается из LexoraApp.__init__ ПОСЛЕ super().__init__().
-    FontManager.load_font() (выше) от этого не зависит — это прямой вызов
-    Windows GDI (AddFontResourceExW), а не создание объекта Font, поэтому
-    остаётся на уровне модуля без изменений."""
     global FONT_BODY, FONT_BODY_MED, FONT_HEADING, FONT_SMALL, FONT_MONO, FONT_MONO_BOLD
     FONT_BODY = ctk.CTkFont(family="Inter", size=14)
     FONT_BODY_MED = ctk.CTkFont(family="Inter", size=13, weight="bold")
@@ -265,7 +190,7 @@ def _init_fonts():
     FONT_MONO_BOLD = ctk.CTkFont(family="Consolas", size=13, weight="bold")
 
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")  # базовая тема CTk остаётся фоллбэком для системных диалогов; визуально перекрыта THEME_NEURAL_OBSIDIAN ниже
+ctk.set_default_color_theme("blue")
 
 WHISPER_MODEL_PATH = os.path.join(application_path, "model_weights", "medium")
 DIARIZATION_CONFIG_PATH = os.path.join(application_path, "model_weights", "diarization", "config.yaml")
@@ -280,7 +205,6 @@ SPEAKER_PALETTE = [
 
 
 def speaker_color(speaker_id: str):
-    """Возвращает (light, dark) пару цветов для бейджа спикера по его индексу в SPEAKER_00/01/..."""
     try:
         idx = int(str(speaker_id).split("_")[-1])
     except (ValueError, IndexError):
@@ -291,13 +215,10 @@ def speaker_color(speaker_id: str):
 class SpeakerCard(ctk.CTkFrame):
     """Карточка идентификации спикера — спец. 3.4 Инструкции.
 
-    fg_color карточки = THEME_NEURAL_OBSIDIAN["card_bg"], тонкая рамка
-    cyan_dim в покое. set_active(True) переводит рамку в cyan_neon —
-    используется как "индикатор активности", переопределённый под
-    архитектуру offline-диаризации (см. примечание в set_active).
+    Модифицирована для поддержки In-place редактирования имени через ctk.CTkEntry.
     """
 
-    def __init__(self, master, speaker_id: str, speak_seconds: float, total_seconds: float, **kwargs):
+    def __init__(self, master, speaker_id: str, speak_seconds: float, total_seconds: float, current_name: str, on_rename_callback, **kwargs):
         super().__init__(
             master,
             corner_radius=CORNER_RADIUS_DEFAULT,
@@ -315,15 +236,26 @@ class SpeakerCard(ctk.CTkFrame):
         self.badge = ctk.CTkLabel(
             self, text=str(speaker_id).replace("SPEAKER_", "S"),
             width=36, height=36, corner_radius=18,
-            fg_color=color, text_color="#000000",  # инверсный высокий контраст — п.3.4
+            fg_color=color, text_color="#000000",
             font=FONT_BODY_MED,
         )
         self.badge.grid(row=0, column=0, rowspan=2, padx=(12, 10), pady=12)
 
-        ctk.CTkLabel(
-            self, text=str(speaker_id), anchor="w",
-            text_color=THEME_NEURAL_OBSIDIAN["text_main"], font=FONT_BODY_MED,
-        ).grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(12, 0))
+        # Поле ввода вместо статического CTkLabel для интуитивного переименования на месте
+        self.name_entry = ctk.CTkEntry(
+            self,
+            font=FONT_BODY_MED,
+            fg_color="transparent",
+            border_width=0,
+            text_color=THEME_NEURAL_OBSIDIAN["text_main"],
+            corner_radius=4
+        )
+        self.name_entry.insert(0, current_name)
+        self.name_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(12, 0))
+
+        # Навешивание обработчиков событий: подтверждение ввода (Enter) и потеря фокуса
+        self.name_entry.bind("<Return>", lambda event: on_rename_callback(self.speaker_id))
+        self.name_entry.bind("<FocusOut>", lambda event: on_rename_callback(self.speaker_id))
 
         ctk.CTkLabel(
             self, text=f"{speak_seconds:.0f} сек · {share * 100:.0f}% эфира", anchor="w",
@@ -337,17 +269,6 @@ class SpeakerCard(ctk.CTkFrame):
         )
 
     def set_active(self, is_active: bool):
-        """Подсвечивает рамку карточки cyan_neon.
-
-        ПРИМЕЧАНИЕ: спец. 3.4 описывает это как индикатор состояния "спикер
-        говорит" — такого состояния не существует в текущей архитектуре,
-        т.к. диаризация выполняется одним блокирующим проходом по всему
-        файлу ПОСЛЕ его записи, а не в реальном времени по живому потоку.
-        Поэтому set_active() вызывается не от детектора речи, а при клике
-        пользователя по сегменту транскрипта в textbox (см.
-        LexoraApp._on_transcript_segment_click) — то есть это
-        "подсветка релевантного спикера", а не "живая индикация речи".
-        """
         if is_active:
             self.configure(border_color=THEME_NEURAL_OBSIDIAN["cyan_neon"], border_width=2)
         else:
@@ -355,13 +276,7 @@ class SpeakerCard(ctk.CTkFrame):
 
 
 class DropZone(ctk.CTkFrame):
-    """Зона drag-and-drop — спец. 3.2 Инструкции.
-
-    border_color переключается cyan_dim (Idle) <-> cyan_neon (Hover).
-    Контракт tkinterdnd2 (п.3.2): обработчики <<DropEnter>>/<<DropPosition>>
-    обязаны возвращать tkinterdnd2.COPY — без этого системный курсор не
-    покажет действие "drop allowed". Проверено по исходнику tkinterdnd2==0.5.0.
-    """
+    """Зона drag-and-drop — спец. 3.2 Инструкции."""
 
     def __init__(self, master, on_file_dropped, **kwargs):
         super().__init__(
@@ -382,7 +297,6 @@ class DropZone(ctk.CTkFrame):
                                         text_color=THEME_NEURAL_OBSIDIAN["text_dim"])
         self.hint_label.pack(pady=(0, 26))
 
-        # Клик по зоне — открыть системный диалог выбора файла (как обычная кнопка)
         for widget in (self, self.icon_label, self.hint_label):
             widget.bind("<Button-1>", self._on_click)
 
@@ -418,20 +332,7 @@ class DropZone(ctk.CTkFrame):
 
 
 class DotMatrixProgressBar(ctk.CTkFrame):
-    """Буквальная точечная сетка прогресса — Canvas-вариант.
-
-    НЕ используется по умолчанию в LexoraApp (см. примечание ниже).
-    Спец. 3.3 называет компонент "точечно-матричным", но фактическая
-    конфигурация, которую она же предписывает (mode="determinate",
-    progress_color, fg_color на обычном CTkProgressBar), не производит
-    визуальную точечную сетку — это просто закрашенный прямоугольник.
-    Стандартный CTkProgressBar действительно не умеет рисовать дискретные
-    точки (подтверждено по исходнику customtkinter==5.2.2 — внутренний
-    canvas рисует один непрерывный прямоугольник прогресса). Эта реализация
-    закрывает буквальную трактовку "точечная сетка" через Canvas с N
-    дискретными прямоугольниками — подключить вместо StatusProgressBar в
-    LexoraApp.__init__, если нужен именно этот визуальный эффект.
-    """
+    """Буквальная точечная сетка прогресса — Canvas-вариант."""
 
     def __init__(self, master, dot_count: int = 28, dot_size: int = 8, gap: int = 4, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -463,15 +364,7 @@ class DotMatrixProgressBar(ctk.CTkFrame):
 
 
 class DiarizationProgressHook:
-    """Hook для pyannote.audio.Pipeline.__call__(file, hook=...) — спец. 3.3.
-
-    Контракт hook(step_name, step_artifact, file, total, completed) проверен
-    по исходнику pyannote.audio==3.3.1 (pipelines/speaker_diarization.py).
-    Реально эмитируемые step_name для SpeakerDiarization pipeline:
-    "segmentation", "speaker_counting", "embeddings" (с total/completed по
-    батчам), "discrete_diarization". Передаётся в UI через app.after(0, ...)
-    — не блокирует главный цикл Tkinter (требование п.3.3).
-    """
+    """Hook для pyannote.audio.Pipeline.__call__(file, hook=...) — спец. 3.3."""
 
     STEP_LABELS = {
         "segmentation": "Поиск речевых сегментов",
@@ -479,11 +372,7 @@ class DiarizationProgressHook:
         "embeddings": "Извлечение голосовых отпечатков",
         "discrete_diarization": "Финальная кластеризация",
     }
-    # Веса ОТНОСИТЕЛЬНЫ внутри фазы диаризации (сумма покрывает 0..1 этой фазы).
-    # Абсолютное положение фазы на общей шкале прогресса задаётся через
-    # start_fraction/end_fraction конструктора — без этого после транскрибации
-    # (которая уже довела бар, например, до 0.41) хук откатывал бы прогресс
-    # обратно к 0.0 в момент первого вызова "segmentation".
+
     STEP_WEIGHTS = {
         "segmentation": (0.00, 0.15),
         "speaker_counting": (0.15, 0.20),
@@ -520,17 +409,21 @@ class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
 class LexoraApp(DnDCTk):
     def __init__(self):
         super().__init__()
-        _init_fonts()  # root-окно уже существует — теперь можно безопасно создавать CTkFont
+        _init_fonts()
         self.title("Lexora")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
-        self.configure(fg_color=THEME_NEURAL_OBSIDIAN["window_bg"])  # спец. 3.1
+        self.configure(fg_color=THEME_NEURAL_OBSIDIAN["window_bg"])
 
         self.transcribed_segments = []
         self.speaker_cards = {}
         self.current_audio_path = None
         self.is_running = False
+
+        # Хранилища для отслеживания динамического переименования спикеров
+        self.speaker_names_map = {}
+        self.speaker_entries = {}
 
         self.show_time_var = ctk.BooleanVar(value=True)
         self.use_roles_var = ctk.BooleanVar(value=False)
@@ -599,7 +492,7 @@ class LexoraApp(DnDCTk):
         self.progressbar.pack(pady=(4, 0), fill="x")
         self.progressbar.set(0)
 
-        # -------------------- основная рабочая область: транскрипт + карточки --------------------
+        # -------------------- основная рабочая область --------------------
         body_frame = ctk.CTkFrame(self, fg_color="transparent")
         body_frame.pack(padx=14, pady=(0, 14), fill="both", expand=True)
         body_frame.grid_columnconfigure(0, weight=3)
@@ -614,10 +507,7 @@ class LexoraApp(DnDCTk):
             corner_radius=CORNER_RADIUS_DEFAULT,
         )
         self.textbox.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        # CTkTextbox не оборачивает tag_config/tag_bind как публичные методы —
-        # обращаемся к внутреннему tkinter.Text напрямую через _textbox
-        # (подтверждено по исходнику customtkinter==5.2.2: insert() сам
-        # форвардит tags, но настройка вида тега доступна только так).
+
         self._raw_textbox = self.textbox._textbox
         self._raw_textbox.tag_config("ts", foreground=self._fg("text_dim"))
         self._raw_textbox.tag_config("spk", foreground=self._fg("cyan_neon"), font=("Consolas", 13, "bold"))
@@ -642,7 +532,6 @@ class LexoraApp(DnDCTk):
 
     # -------------------- утилиты темы --------------------
     def _fg(self, theme_key: str) -> str:
-        """Возвращает hex-цвет из пары (light, dark) THEME_NEURAL_OBSIDIAN под текущий appearance_mode."""
         light, dark = THEME_NEURAL_OBSIDIAN[theme_key]
         return dark if ctk.get_appearance_mode() == "Dark" else light
 
@@ -658,6 +547,7 @@ class LexoraApp(DnDCTk):
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     def redraw_interface(self):
+        """Очищает и полностью обновляет текстовое окно с подстановкой актуальных имен из карты маппинга."""
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
         for idx, (start, end, text) in enumerate(self.transcribed_segments):
@@ -666,7 +556,7 @@ class LexoraApp(DnDCTk):
         self.textbox.configure(state="disabled")
 
     def _insert_segment_line(self, idx, start, end, text):
-        """Вставляет строку с раздельной тегировкой: таймкод / тег спикера / текст (спец. 3.6)."""
+        """Вставляет строку сегмента, динамически заменяя технические ID спикеров на кастомные."""
         seg_tag = f"seg_{idx}"
         if self.show_time_var.get():
             self.textbox.insert("end", f"[{self.format_time(start)} -> {self.format_time(end)}] ", ("ts", seg_tag))
@@ -680,7 +570,9 @@ class LexoraApp(DnDCTk):
                 body_text = rest
 
         if speaker_label:
-            self.textbox.insert("end", f"{speaker_label}: ", ("spk", seg_tag))
+            # Если спикер переименован, берем измененное имя пользователя из словаря
+            display_name = self.speaker_names_map.get(speaker_label, speaker_label)
+            self.textbox.insert("end", f"{display_name}: ", ("spk", seg_tag))
         self.textbox.insert("end", f"{body_text}\n", (seg_tag,))
 
         if speaker_label:
@@ -688,11 +580,6 @@ class LexoraApp(DnDCTk):
                                         lambda e, spk=speaker_label: self._on_transcript_segment_click(spk))
 
     def _on_transcript_segment_click(self, speaker_id: str):
-        """Подсветка карточки спикера по клику на сегмент транскрипта.
-
-        Реализация "индикатора активности" из спец. 3.4, адаптированная под
-        offline-архитектуру диаризации — см. SpeakerCard.set_active().
-        """
         for sid, card in self.speaker_cards.items():
             card.set_active(sid == speaker_id)
 
@@ -762,11 +649,11 @@ class LexoraApp(DnDCTk):
         for card in self.speaker_cards.values():
             card.destroy()
         self.speaker_cards.clear()
+        self.speaker_entries.clear()
+        self.speaker_names_map.clear()  # Полная очистка словаря соответствий при инициализации новой сессии
         self.cards_empty_label.pack(pady=20)
 
     def _populate_speaker_cards(self, diarization_result):
-        """Строит SpeakerCard по реальным суммарным длительностям из diarization_result
-        (а не из Whisper-сегментов — Annotation является источником истины по таймингу речи)."""
         durations = {}
         for turn, _, speaker in diarization_result.itertracks(yield_label=True):
             durations[speaker] = durations.get(speaker, 0.0) + (turn.end - turn.start)
@@ -776,10 +663,62 @@ class LexoraApp(DnDCTk):
 
         self.cards_empty_label.pack_forget()
         total = sum(durations.values())
+        
+        self.speaker_entries.clear()
+        
         for speaker in sorted(durations.keys()):
-            card = SpeakerCard(self.cards_panel, speaker, durations[speaker], total)
+            if speaker not in self.speaker_names_map:
+                self.speaker_names_map[speaker] = speaker
+
+            current_display_name = self.speaker_names_map[speaker]
+
+            # Создание карточки с передачей текущего имени и обратного колбэка
+            card = SpeakerCard(
+                self.cards_panel, 
+                speaker, 
+                durations[speaker], 
+                total, 
+                current_display_name,
+                self._on_speaker_renamed
+            )
             card.pack(fill="x", padx=4, pady=4)
             self.speaker_cards[speaker] = card
+            self.speaker_entries[speaker] = card.name_entry
+
+    def _on_speaker_renamed(self, speaker_id: str):
+        """Callback-приемник событий <Return> и <FocusOut> от полей ввода SpeakerCard.
+        
+        Обновляет карту имен, инициирует сквозную перезапись текстового поля и файла.
+        """
+        entry = self.speaker_entries.get(speaker_id)
+        if not entry:
+            return
+
+        new_name = entry.get().strip()
+        
+        # Если имя стерто пользователем, принудительно возвращаем технический ID
+        if not new_name:
+            new_name = speaker_id
+            entry.delete(0, "end")
+            entry.insert(0, speaker_id)
+
+        # Если имя не изменилось, завершаем выполнение для экономии ресурсов
+        if self.speaker_names_map.get(speaker_id) == new_name:
+            return
+
+        self.speaker_names_map[speaker_id] = new_name
+
+        # Мягкий визуальный фидбек: кратковременная рамка циана вокруг поля ввода
+        entry.configure(border_width=1, border_color=self._fg("cyan_neon"))
+        self.after(400, lambda: entry.configure(border_width=0))
+
+        # Перерисовка основного UI с сохранением текущего положения прокрутки
+        current_scroll = self.textbox.yview()
+        self.redraw_interface()
+        self.textbox.yview_moveto(current_scroll[0])
+        
+        # Реактивное обновление финального файла результатов
+        self.save_to_file()
 
     def _convert_to_wav(self, input_file):
         temp_fd, temp_path = tempfile.mkstemp(suffix=".wav")
@@ -837,7 +776,7 @@ class LexoraApp(DnDCTk):
             segments, info = whisper_model.transcribe(audio_file, beam_size=5)
             duration = info.duration
 
-            transcribe_budget = 0.35 if use_diarization else 0.94  # доля прогресс-бара, отведённая транскрибации
+            transcribe_budget = 0.35 if use_diarization else 0.94
             for segment in segments:
                 if not self.is_running:
                     break
@@ -906,19 +845,27 @@ class LexoraApp(DnDCTk):
             self.after(0, reset_ui)
 
     def save_to_file(self):
+        """Экспортирует итоговый файл транскрипции на диск, подставляя пользовательские имена из маппинга."""
         if not self.current_audio_path or not self.transcribed_segments:
             return
         output_txt = os.path.splitext(self.current_audio_path)[0] + "_transcript.txt"
         try:
             with open(output_txt, "w", encoding="utf-8") as f:
                 for start, end, text in self.transcribed_segments:
+                    processed_text = text
+                    if text.startswith("[") and "] " in text:
+                        maybe_speaker, _, rest = text[1:].partition("] ")
+                        if maybe_speaker.startswith("SPEAKER_"):
+                            display_name = self.speaker_names_map.get(maybe_speaker, maybe_speaker)
+                            processed_text = f"{display_name}: {rest}"
+
                     if self.show_time_var.get():
-                        f.write(f"[{self.format_time(start)} -> {self.format_time(end)}] {text}\n")
+                        f.write(f"[{self.format_time(start)} -> {self.format_time(end)}] {processed_text}\n")
                     else:
-                        f.write(f"{text}\n")
+                        f.write(f"{processed_text}\n")
             self.after(0, self.system_log_ui, f"\n[+] Сохранено: {output_txt}")
         except Exception as e:
-            self.after(0, self.system_log_ui, f"\n[-] Ошибка сохранения: {str(e)}")
+            self.after(0, self.system_log_ui, f"\n[-] Ошибка保存: {str(e)}")
 
 
 if __name__ == "__main__":
