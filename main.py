@@ -29,7 +29,7 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.5.5")
+        self.title("Lexora v1.5.6")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -45,6 +45,10 @@ class LexoraApp(DnDCTk):
 
         self.show_time_var = ctk.BooleanVar(value=True)
         self.use_roles_var = ctk.BooleanVar(value=False)
+
+        # Переменные состояния для поиска
+        self.search_matches = []
+        self.current_match_idx = -1
 
         # Начальная конфигурация ИИ-фильтров VAD по умолчанию (Паритет с пресетом "Стандарт")
         self.vad_config = {
@@ -171,10 +175,26 @@ class LexoraApp(DnDCTk):
         self.search_entry.pack(side="left", fill="x", expand=True)
         self.search_entry.bind("<KeyRelease>", self._execute_text_search)
 
+        self.btn_search_up = ctk.CTkButton(
+            self.search_frame, text="▲", width=28, height=28, font=ui.FONT_SMALL,
+            fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
+            hover_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
+            command=self._search_navigate_up
+        )
+        self.btn_search_up.pack(side="left", padx=(5, 0))
+
+        self.btn_search_down = ctk.CTkButton(
+            self.search_frame, text="▼", width=28, height=28, font=ui.FONT_SMALL,
+            fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
+            hover_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
+            command=self._search_navigate_down
+        )
+        self.btn_search_down.pack(side="left", padx=(5, 10))
+
         self.search_count_label = ctk.CTkLabel(
             self.search_frame, text="Найдено: 0", font=ui.FONT_SMALL, text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"]
         )
-        self.search_count_label.pack(side="right", padx=(10, 0))
+        self.search_count_label.pack(side="right", padx=(0, 0))
 
         self.textbox = ctk.CTkTextbox(
             body_frame, state="disabled", font=ui.FONT_MONO,
@@ -189,6 +209,7 @@ class LexoraApp(DnDCTk):
         self._raw_textbox.tag_config("spk", foreground=self._fg("cyan_neon"), font=("Consolas", 13, "bold"))
         self._raw_textbox.tag_config("seg_hover", background=self._fg("frame_bg"))
         self._raw_textbox.tag_config("search_highlight", background=self._fg("cyan_neon"), foreground="#000000")
+        self._raw_textbox.tag_config("search_active_highlight", background="#FF9900", foreground="#000000")
 
         cards_outer = ctk.CTkFrame(body_frame, fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"],
                                     corner_radius=ui.CORNER_RADIUS_DEFAULT)
@@ -218,12 +239,14 @@ class LexoraApp(DnDCTk):
     def _execute_text_search(self, event=None):
         query = self.search_entry.get().lower().strip()
         self._raw_textbox.tag_remove("search_highlight", "1.0", "end")
+        self._raw_textbox.tag_remove("search_active_highlight", "1.0", "end")
+        self.search_matches = []
+        self.current_match_idx = -1
         
         if not query:
             self.search_count_label.configure(text="Найдено: 0")
             return
             
-        count = 0
         start_pos = "1.0"
         query_len = len(query)
         
@@ -234,10 +257,42 @@ class LexoraApp(DnDCTk):
             
             end_pos = f"{start_pos}+{query_len}c"
             self._raw_textbox.tag_add("search_highlight", start_pos, end_pos)
+            self.search_matches.append((start_pos, end_pos))
             start_pos = end_pos
-            count += 1
             
-        self.search_count_label.configure(text=f"Найдено: {count}")
+        if self.search_matches:
+            self.current_match_idx = 0
+            self._highlight_current_match()
+        else:
+            self.search_count_label.configure(text="Найдено: 0")
+
+    def _highlight_current_match(self):
+        if not self.search_matches or self.current_match_idx < 0:
+            return
+        
+        self._raw_textbox.tag_remove("search_active_highlight", "1.0", "end")
+        start_pos, end_pos = self.search_matches[self.current_match_idx]
+        self._raw_textbox.tag_add("search_active_highlight", start_pos, end_pos)
+        self._raw_textbox.see(start_pos)
+        
+        total = len(self.search_matches)
+        self.search_count_label.configure(text=f"Найдено: {self.current_match_idx + 1}/{total}")
+
+    def _search_navigate_up(self):
+        if not self.search_matches:
+            return
+        self.current_match_idx -= 1
+        if self.current_match_idx < 0:
+            self.current_match_idx = len(self.search_matches) - 1
+        self._highlight_current_match()
+
+    def _search_navigate_down(self):
+        if not self.search_matches:
+            return
+        self.current_match_idx += 1
+        if self.current_match_idx >= len(self.search_matches):
+            self.current_match_idx = 0
+        self._highlight_current_match()
 
     def redraw_interface(self):
         self.textbox.configure(state="normal")
@@ -493,6 +548,9 @@ class LexoraApp(DnDCTk):
         self.search_entry.delete(0, "end")
         self.search_count_label.configure(text="Найдено: 0")
         self._raw_textbox.tag_remove("search_highlight", "1.0", "end")
+        self._raw_textbox.tag_remove("search_active_highlight", "1.0", "end")
+        self.search_matches = []
+        self.current_match_idx = -1
 
     def _on_save_dropdown_click(self, choice: str):
         if not self.current_audio_path or not self.transcribed_segments:
@@ -620,7 +678,7 @@ class LexoraApp(DnDCTk):
                 })
                 
             export_data = {
-                "program": "Lexora v1.5.5",
+                "program": "Lexora v1.5.6",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data
