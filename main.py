@@ -6,12 +6,13 @@ import threading
 import json
 import csv
 import datetime
+import sqlite3
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from tkinterdnd2 import TkinterDnD
 
 import ui_components as ui
-from ui_components import SpeakerCard, DropZone, DotMatrixProgressBar, THEME_NEURAL_OBSIDIAN, VadSettingsWindow
+from ui_components import SpeakerCard, DropZone, DotMatrixProgressBar, THEME_NEURAL_OBSIDIAN, VadSettingsWindow, HistoryCard
 from worker import AudioProcessingWorker
 
 LOCALIZATION_DATA = {
@@ -33,7 +34,12 @@ LOCALIZATION_DATA = {
         "LOG_STOP_TIMEOUT": "[!] Превышено время ожидания завершения потока. Возврат в рабочий режим.",
         "TELEMETRY_CPU": "⚙️ Вычисления: CPU RAM",
         "TELEMETRY_CUDA": "⚙️ CUDA VRAM",
-        "DROP_ZONE": "Перетащите аудио/видео файл сюда\nили нажмите, чтобы выбрать"
+        "DROP_ZONE": "Перетащите аудио/видео файл сюда\nили нажмите, чтобы выбрать",
+        "HEADER_HISTORY": "ИСТОРИЯ СЕССИЙ",
+        "BTN_LOAD": "Открыть",
+        "BTN_DELETE": "Удалить",
+        "TAB_SPEAKERS": "Спикеры",
+        "TAB_HISTORY": "История"
     },
     "UK": {
         "BTN_SELECT": "Обрати файл",
@@ -53,7 +59,12 @@ LOCALIZATION_DATA = {
         "LOG_STOP_TIMEOUT": "[!] Перевищено час очікування завершення потоку. Повернення в робочий режим.",
         "TELEMETRY_CPU": "⚙️ Обчислення: CPU RAM",
         "TELEMETRY_CUDA": "⚙️ CUDA VRAM",
-        "DROP_ZONE": "Перетягніть аудіо/відео файл сюди\nабо натисніть, щоб обрати"
+        "DROP_ZONE": "Перетягніть аудіо/відео файл сюди\nабо натисніть, щоб обрати",
+        "HEADER_HISTORY": "ІСТОРІЯ СЕСІЙ",
+        "BTN_LOAD": "Відкрити",
+        "BTN_DELETE": "Видалити",
+        "TAB_SPEAKERS": "Спікери",
+        "TAB_HISTORY": "Історія"
     },
     "EN": {
         "BTN_SELECT": "Select File",
@@ -73,7 +84,12 @@ LOCALIZATION_DATA = {
         "LOG_STOP_TIMEOUT": "[!] Thread shutdown timeout exceeded. Returning to operational state.",
         "TELEMETRY_CPU": "⚙️ Computing: CPU RAM",
         "TELEMETRY_CUDA": "⚙️ CUDA VRAM",
-        "DROP_ZONE": "Drag and drop audio/video file here\nor click to select"
+        "DROP_ZONE": "Drag and drop audio/video file here\nor click to select",
+        "HEADER_HISTORY": "SESSION HISTORY",
+        "BTN_LOAD": "Open",
+        "BTN_DELETE": "Delete",
+        "TAB_SPEAKERS": "Speakers",
+        "TAB_HISTORY": "History"
     }
 }
 
@@ -93,7 +109,7 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.6.1")
+        self.title("Lexora v1.7.0")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -123,6 +139,8 @@ class LexoraApp(DnDCTk):
             }
         }
         self.settings_window = None
+        
+        self._init_db()
 
         # Панель управления
         self.top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -284,20 +302,212 @@ class LexoraApp(DnDCTk):
         self._raw_textbox.tag_config("search_highlight", background=self._fg("cyan_neon"), foreground="#000000")
         self._raw_textbox.tag_config("search_active_highlight", background="#FF9900", foreground="#000000")
 
-        cards_outer = ctk.CTkFrame(body_frame, fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"],
-                                    corner_radius=ui.CORNER_RADIUS_DEFAULT)
-        cards_outer.grid(row=0, column=1, rowspan=2, sticky="nsew")
-        self.header_speakers_label = ctk.CTkLabel(cards_outer, text=self.tr("HEADER_SPEAKERS"), font=ui.FONT_SMALL,
-                     text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"])
-        self.header_speakers_label.pack(anchor="w", padx=14, pady=(12, 4))
-
-        self.cards_panel = ctk.CTkScrollableFrame(cards_outer, fg_color="transparent")
+        self.right_panel = ctk.CTkFrame(body_frame, fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"], corner_radius=ui.CORNER_RADIUS_DEFAULT)
+        self.right_panel.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        
+        self.right_nav_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        self.right_nav_frame.pack(fill="x", padx=10, pady=(10, 5))
+        
+        self.btn_tab_speakers = ctk.CTkButton(
+            self.right_nav_frame, text=self.tr("TAB_SPEAKERS"), font=ui.FONT_SMALL,
+            fg_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
+            hover_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
+            command=lambda: self._switch_right_tab("speakers")
+        )
+        self.btn_tab_speakers.pack(side="left", expand=True, padx=(0, 2))
+        
+        self.btn_tab_history = ctk.CTkButton(
+            self.right_nav_frame, text=self.tr("TAB_HISTORY"), font=ui.FONT_SMALL,
+            fg_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
+            hover_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
+            command=lambda: self._switch_right_tab("history")
+        )
+        self.btn_tab_history.pack(side="left", expand=True, padx=(2, 0))
+        
+        self.speakers_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        self.history_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        
+        self.cards_panel = ctk.CTkScrollableFrame(self.speakers_frame, fg_color="transparent")
         self.cards_panel.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.cards_empty_label = ctk.CTkLabel(
             self.cards_panel, text=self.tr("CARDS_EMPTY"), font=ui.FONT_SMALL,
             text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"], wraplength=160,
         )
         self.cards_empty_label.pack(pady=20)
+        
+        self.history_panel = ctk.CTkScrollableFrame(self.history_frame, fg_color="transparent")
+        self.history_panel.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        
+        self._switch_right_tab("speakers")
+        self._refresh_history_ui()
+
+    def _init_db(self):
+        self.db_path = "lexora_history.db"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    file_name TEXT,
+                    file_path TEXT,
+                    duration REAL,
+                    lang TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER,
+                    start_sec REAL,
+                    end_sec REAL,
+                    speaker_raw TEXT,
+                    speaker_display TEXT,
+                    text TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+            """)
+
+    def _save_session_to_db(self, segments, diarization_result):
+        if not segments:
+            return
+        
+        duration = segments[-1][1] if segments else 0.0
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        file_name = os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown"
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO sessions (timestamp, file_name, file_path, duration, lang)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (timestamp, file_name, self.current_audio_path, duration, self.current_lang))
+                
+                session_id = cursor.lastrowid
+                
+                for start, end, text in segments:
+                    speaker_raw = ""
+                    speaker_display = ""
+                    processed_text = text
+                    
+                    if text.startswith("[") and "] " in text:
+                        maybe_speaker, _, rest = text[1:].partition("] ")
+                        if maybe_speaker.startswith("SPEAKER_"):
+                            speaker_raw = maybe_speaker
+                            speaker_display = self.speaker_names_map.get(maybe_speaker, maybe_speaker)
+                            processed_text = rest
+                            
+                    cursor.execute("""
+                        INSERT INTO transcripts (session_id, start_sec, end_sec, speaker_raw, speaker_display, text)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (session_id, start, end, speaker_raw, speaker_display, processed_text))
+                
+                conn.commit()
+            self._refresh_history_ui()
+        except Exception as e:
+            self.system_log_ui(f"[-] Ошибка сохранения в БД: {e}")
+
+    def _refresh_history_ui(self):
+        for widget in self.history_panel.winfo_children():
+            widget.destroy()
+            
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, timestamp, file_name, duration FROM sessions ORDER BY id DESC")
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    session_id, timestamp, file_name, duration = row
+                    card = ui.HistoryCard(
+                        self.history_panel, session_id, timestamp, file_name, duration,
+                        self._load_session_from_db, self._delete_session_from_db,
+                        self.tr("BTN_LOAD"), self.tr("BTN_DELETE")
+                    )
+                    card.pack(fill="x", padx=4, pady=4)
+        except Exception as e:
+            self.system_log_ui(f"[-] Ошибка чтения истории: {e}")
+
+    def _load_session_from_db(self, session_id):
+        if self.is_running:
+            messagebox.showwarning("Внимание", "Дождитесь окончания текущей транскрибации!")
+            return
+            
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT file_path FROM sessions WHERE id = ?", (session_id,))
+                row = cursor.fetchone()
+                if row:
+                    self.current_audio_path = row[0]
+                    
+                cursor.execute("SELECT start_sec, end_sec, speaker_raw, speaker_display, text FROM transcripts WHERE session_id = ? ORDER BY id ASC", (session_id,))
+                transcripts = cursor.fetchall()
+                
+                self.transcribed_segments = []
+                self.speaker_names_map = {}
+                
+                for start, end, speaker_raw, speaker_display, text in transcripts:
+                    if speaker_raw:
+                        self.speaker_names_map[speaker_raw] = speaker_display
+                        full_text = f"[{speaker_raw}] {text}"
+                    else:
+                        full_text = text
+                    self.transcribed_segments.append((start, end, full_text))
+                    
+            self.redraw_interface()
+            
+            self._clear_speaker_cards()
+            if self.speaker_names_map:
+                self.cards_empty_label.pack_forget()
+                
+                durations = {}
+                for start, end, text in self.transcribed_segments:
+                    if text.startswith("[") and "] " in text:
+                        maybe_speaker, _, _ = text[1:].partition("] ")
+                        if maybe_speaker.startswith("SPEAKER_"):
+                            durations[maybe_speaker] = durations.get(maybe_speaker, 0.0) + (end - start)
+                            
+                total = sum(durations.values())
+                for speaker in sorted(durations.keys()):
+                    current_display_name = self.speaker_names_map[speaker]
+                    card = ui.SpeakerCard(
+                        self.cards_panel, speaker, durations[speaker], total, 
+                        current_display_name, self._on_speaker_renamed
+                    )
+                    card.pack(fill="x", padx=4, pady=4)
+                    self.speaker_cards[speaker] = card
+                    self.speaker_entries[speaker] = card.name_entry
+                    
+            self.btn_save.configure(state="normal")
+            self.status_label.configure(text=f"Загружена сессия: {os.path.basename(self.current_audio_path) if self.current_audio_path else 'unknown'}")
+            self._switch_right_tab("speakers")
+            
+        except Exception as e:
+            self.system_log_ui(f"[-] Ошибка загрузки сессии: {e}")
+
+    def _delete_session_from_db(self, session_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("PRAGMA foreign_keys = ON;")
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+                conn.commit()
+            self._refresh_history_ui()
+        except Exception as e:
+            self.system_log_ui(f"[-] Ошибка удаления сессии: {e}")
+
+    def _switch_right_tab(self, tab_name):
+        if tab_name == "speakers":
+            self.history_frame.pack_forget()
+            self.speakers_frame.pack(fill="both", expand=True)
+            self.btn_tab_speakers.configure(fg_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"])
+            self.btn_tab_history.configure(fg_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"])
+        else:
+            self.speakers_frame.pack_forget()
+            self.history_frame.pack(fill="both", expand=True)
+            self.btn_tab_history.configure(fg_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"])
+            self.btn_tab_speakers.configure(fg_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"])
 
     def tr(self, key: str) -> str:
         lang_dict = LOCALIZATION_DATA.get(self.current_lang, LOCALIZATION_DATA["RU"])
@@ -326,9 +536,12 @@ class LexoraApp(DnDCTk):
             self.status_label.configure(text=self.tr("STATUS_IDLE"))
             
         self.search_entry.configure(placeholder_text=self.tr("SEARCH_PLACEHOLDER"))
-        self.header_speakers_label.configure(text=self.tr("HEADER_SPEAKERS"))
         self.cards_empty_label.configure(text=self.tr("CARDS_EMPTY"))
         self.drop_zone.hint_label.configure(text=self.tr("DROP_ZONE"))
+        
+        self.btn_tab_speakers.configure(text=self.tr("TAB_SPEAKERS"))
+        self.btn_tab_history.configure(text=self.tr("TAB_HISTORY"))
+        self._refresh_history_ui()
         
         self._execute_text_search()
 
@@ -631,6 +844,7 @@ class LexoraApp(DnDCTk):
                 if diarization_result is not None:
                     self._populate_speaker_cards(diarization_result)
                 self.btn_save.configure(state="normal")
+                self._save_session_to_db(final_segments, diarization_result)
                 self._reset_ui_state()
                 return 
             elif msg_type == "ERROR":
@@ -785,7 +999,7 @@ class LexoraApp(DnDCTk):
                 })
                 
             export_data = {
-                "program": "Lexora v1.6.1",
+                "program": "Lexora v1.7.0",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data

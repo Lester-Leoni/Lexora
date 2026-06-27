@@ -11,9 +11,6 @@ import torch
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 
-# ==============================================================================
-# WORKER ПОТОКОВ (ИЗОЛЯЦИЯ ВЫЧИСЛЕНИЙ И ТЕЛЕМЕТРИЯ)
-# ==============================================================================
 class WorkerDiarizationProgressHook:
     STEP_LABELS = {
         "segmentation": "Поиск речевых сегментов",
@@ -49,7 +46,6 @@ class WorkerDiarizationProgressHook:
         self.queue.put(("STATUS", text))
         self.queue.put(("PROGRESS", global_fraction))
         
-        # Сбор телеметрии на этапах Pyannote
         vram_used = 0.0
         if self.device == "cuda":
             try:
@@ -97,13 +93,11 @@ class AudioProcessingWorker(threading.Thread):
         self.queue.put(("TELEMETRY", (vram_used, device)))
 
     def run(self):
-        # Предотвращение OpenMP Deadlock при инициализации PyTorch во вторичном потоке
         torch.set_num_threads(1)
         os.environ["OMP_NUM_THREADS"] = "1"
         
         session_start = time.monotonic()
         session_status = "Успешно"
-        
         device = "cuda" if torch.cuda.is_available() else "cpu"
         whisper_model = None
         diarize_model = None
@@ -174,40 +168,20 @@ class AudioProcessingWorker(threading.Thread):
                         
                         self.queue.put(("LOG", f"[*] Калибровка VAD: threshold={onset:.2f}, min_off={min_off:.1f}s, min_on={min_on:.2f}s"))
                         
-                        # Пуленепробиваемый адаптивный инжектор параметров под Pyannote 3.3.1+
                         params_applied = False
-                        
-                        # Попытка 1: Через стандартный binarization (совместимость с 3.3.1)
                         if not params_applied:
                             try:
-                                native_33 = {
-                                    "binarization": {
-                                        "onset": onset,
-                                        "offset": offset,
-                                        "min_duration_on": min_on,
-                                        "min_duration_off": min_off
-                                    }
-                                }
+                                native_33 = {"binarization": {"onset": onset, "offset": offset, "min_duration_on": min_on, "min_duration_off": min_off}}
                                 diarize_model.instantiate(native_33)
                                 params_applied = True
-                            except Exception:
-                                pass
+                            except Exception: pass
 
-                        # Попытка 2: Через плоскую структуру сегментации
                         if not params_applied:
                             try:
-                                native_31 = {
-                                    "segmentation": {
-                                        "onset": onset,
-                                        "offset": offset,
-                                        "min_duration_on": min_on,
-                                        "min_duration_off": min_off
-                                    }
-                                }
+                                native_31 = {"segmentation": {"onset": onset, "offset": offset, "min_duration_on": min_on, "min_duration_off": min_off}}
                                 diarize_model.instantiate(native_31)
                                 params_applied = True
-                            except Exception:
-                                pass
+                            except Exception: pass
 
                         if not params_applied:
                             self.queue.put(("LOG", "[!] Предупреждение: структура весов уникальна. Использованы встроенные заводские калибровки."))
@@ -284,18 +258,15 @@ class AudioProcessingWorker(threading.Thread):
             try:
                 with open("lexora_runtime.log", "a", encoding="utf-8") as log_file:
                     log_file.write(log_line)
-            except Exception:
-                pass
+            except Exception: pass
             
             if device == "cuda":
                 if diarize_model is not None:
                     try: diarize_model.to(torch.device("cpu"))
                     except Exception: pass
                 torch.cuda.empty_cache()
-            if whisper_model is not None:
-                del whisper_model
-            if diarize_model is not None:
-                del diarize_model
+            if whisper_model is not None: del whisper_model
+            if diarize_model is not None: del diarize_model
             gc.collect()
 
             if temp_wav_path and os.path.exists(temp_wav_path):
