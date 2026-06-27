@@ -14,6 +14,69 @@ import ui_components as ui
 from ui_components import SpeakerCard, DropZone, DotMatrixProgressBar, THEME_NEURAL_OBSIDIAN, VadSettingsWindow
 from worker import AudioProcessingWorker
 
+LOCALIZATION_DATA = {
+    "RU": {
+        "BTN_SELECT": "Выбрать файл",
+        "BTN_STOP": "Стоп",
+        "BTN_COPY": "Копировать",
+        "BTN_SAVE_DEFAULT": "Сохранить как...",
+        "BTN_SETTINGS": "⚙ Настройки VAD",
+        "SWITCH_TIMECODES": "Таймкоды",
+        "SWITCH_DIARIZATION": "Диалог (Роли)",
+        "STATUS_IDLE": "Ожидание файла",
+        "SEARCH_PLACEHOLDER": "Поиск по тексту...",
+        "SEARCH_FOUND": "Найдено: ",
+        "HEADER_SPEAKERS": "СПИКЕРЫ",
+        "CARDS_EMPTY": "Появятся после диаризации",
+        "LOG_VAD_INJECT": "[+] Новая калибровка VAD применена в рантайме.",
+        "LOG_STOP_SIGNAL": "[!] Остановка процесса по команде пользователя. Ожидание завершения потока...",
+        "LOG_STOP_TIMEOUT": "[!] Превышено время ожидания завершения потока. Возврат в рабочий режим.",
+        "TELEMETRY_CPU": "⚙️ Вычисления: CPU RAM",
+        "TELEMETRY_CUDA": "⚙️ CUDA VRAM",
+        "DROP_ZONE": "Перетащите аудио/видео файл сюда\nили нажмите, чтобы выбрать"
+    },
+    "UK": {
+        "BTN_SELECT": "Обрати файл",
+        "BTN_STOP": "Стоп",
+        "BTN_COPY": "Копіювати",
+        "BTN_SAVE_DEFAULT": "Зберегти як...",
+        "BTN_SETTINGS": "⚙ Налаштування VAD",
+        "SWITCH_TIMECODES": "Таймкоди",
+        "SWITCH_DIARIZATION": "Діалог (Ролі)",
+        "STATUS_IDLE": "Очікування файлу",
+        "SEARCH_PLACEHOLDER": "Пошук по тексту...",
+        "SEARCH_FOUND": "Знайдено: ",
+        "HEADER_SPEAKERS": "СПІКЕРИ",
+        "CARDS_EMPTY": "З'являться після діаризації",
+        "LOG_VAD_INJECT": "[+] Нова калібровка VAD застосована в рантаймі.",
+        "LOG_STOP_SIGNAL": "[!] Зупинка процесу за командою користувача. Очікування завершення потоку...",
+        "LOG_STOP_TIMEOUT": "[!] Перевищено час очікування завершення потоку. Повернення в робочий режим.",
+        "TELEMETRY_CPU": "⚙️ Обчислення: CPU RAM",
+        "TELEMETRY_CUDA": "⚙️ CUDA VRAM",
+        "DROP_ZONE": "Перетягніть аудіо/відео файл сюди\nабо натисніть, щоб обрати"
+    },
+    "EN": {
+        "BTN_SELECT": "Select File",
+        "BTN_STOP": "Stop",
+        "BTN_COPY": "Copy",
+        "BTN_SAVE_DEFAULT": "Save as...",
+        "BTN_SETTINGS": "⚙ VAD Settings",
+        "SWITCH_TIMECODES": "Timecodes",
+        "SWITCH_DIARIZATION": "Dialogue (Roles)",
+        "STATUS_IDLE": "Waiting for file",
+        "SEARCH_PLACEHOLDER": "Search text...",
+        "SEARCH_FOUND": "Found: ",
+        "HEADER_SPEAKERS": "SPEAKERS",
+        "CARDS_EMPTY": "Will appear after diarization",
+        "LOG_VAD_INJECT": "[+] New VAD calibration applied at runtime.",
+        "LOG_STOP_SIGNAL": "[!] Process stopped by user. Waiting for thread shutdown...",
+        "LOG_STOP_TIMEOUT": "[!] Thread shutdown timeout exceeded. Returning to operational state.",
+        "TELEMETRY_CPU": "⚙️ Computing: CPU RAM",
+        "TELEMETRY_CUDA": "⚙️ CUDA VRAM",
+        "DROP_ZONE": "Drag and drop audio/video file here\nor click to select"
+    }
+}
+
 # ==============================================================================
 # ГЛАВНОЕ ПРИЛОЖЕНИЕ (UI)
 # ==============================================================================
@@ -25,11 +88,12 @@ class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
 class LexoraApp(DnDCTk):
     def __init__(self):
         super().__init__()
+        self.current_lang = "RU"
         ui.init_fonts()
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.5.6")
+        self.title("Lexora v1.6.1")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -65,7 +129,7 @@ class LexoraApp(DnDCTk):
         self.top_frame.pack(pady=(14, 8), padx=14, fill="x")
 
         self.btn_select = ctk.CTkButton(
-            self.top_frame, text="Выбрать файл", font=ui.FONT_BODY_MED,
+            self.top_frame, text=self.tr("BTN_SELECT"), font=ui.FONT_BODY_MED,
             fg_color=ui.THEME_NEURAL_OBSIDIAN["cyan_neon"], text_color="#000000",
             hover_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
             command=self.start_processing,
@@ -73,14 +137,14 @@ class LexoraApp(DnDCTk):
         self.btn_select.pack(side="left", padx=5)
 
         self.btn_stop = ctk.CTkButton(
-            self.top_frame, text="Стоп", font=ui.FONT_BODY_MED,
+            self.top_frame, text=self.tr("BTN_STOP"), font=ui.FONT_BODY_MED,
             fg_color="#c93434", hover_color="#a32a2a", corner_radius=ui.CORNER_RADIUS_DEFAULT,
             state="disabled", command=self.stop_processing,
         )
         self.btn_stop.pack(side="left", padx=5)
 
         self.btn_copy = ctk.CTkButton(
-            self.top_frame, text="Копировать", font=ui.FONT_BODY,
+            self.top_frame, text=self.tr("BTN_COPY"), font=ui.FONT_BODY,
             fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
             hover_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
             command=self.copy_text,
@@ -102,12 +166,12 @@ class LexoraApp(DnDCTk):
             state="disabled",
             command=self._on_save_dropdown_click
         )
-        self.btn_save.set("Сохранить как...")
+        self.btn_save.set(self.tr("BTN_SAVE_DEFAULT"))
         self.btn_save.pack(side="left", padx=5)
 
         # Неоновая кнопка тонкой калибровки VAD
         self.btn_settings = ctk.CTkButton(
-            self.top_frame, text="⚙ Настройки VAD", font=ui.FONT_SMALL,
+            self.top_frame, text=self.tr("BTN_SETTINGS"), font=ui.FONT_SMALL,
             fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
             hover_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], border_width=1, border_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"],
             corner_radius=ui.CORNER_RADIUS_DEFAULT, command=self.open_vad_settings
@@ -115,20 +179,29 @@ class LexoraApp(DnDCTk):
         self.btn_settings.pack(side="left", padx=5)
 
         self.switch_timecodes = ctk.CTkSwitch(
-            self.top_frame, text="Таймкоды", font=ui.FONT_SMALL,
+            self.top_frame, text=self.tr("SWITCH_TIMECODES"), font=ui.FONT_SMALL,
             progress_color=ui.THEME_NEURAL_OBSIDIAN["cyan_neon"],
             variable=self.show_time_var, command=self.redraw_interface,
         )
         self.switch_timecodes.pack(side="right", padx=10)
 
         self.switch_diarization = ctk.CTkSwitch(
-            self.top_frame, text="Диалог (Роли)", font=ui.FONT_SMALL,
+            self.top_frame, text=self.tr("SWITCH_DIARIZATION"), font=ui.FONT_SMALL,
             progress_color=ui.THEME_NEURAL_OBSIDIAN["cyan_neon"],
             variable=self.use_roles_var,
         )
         self.switch_diarization.pack(side="right", padx=10)
 
+        self.btn_lang = ctk.CTkButton(
+            self.top_frame, text=self.current_lang, width=44, font=ui.FONT_BODY_MED,
+            fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"], text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
+            hover_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], corner_radius=ui.CORNER_RADIUS_DEFAULT,
+            command=self._cycle_language
+        )
+        self.btn_lang.pack(side="right", padx=5)
+
         self.drop_zone = ui.DropZone(self, on_file_dropped=self.start_processing, height=120)
+        self.drop_zone.hint_label.configure(text=self.tr("DROP_ZONE"))
         self.drop_zone.pack(padx=14, pady=(0, 10), fill="x")
 
         status_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -138,7 +211,7 @@ class LexoraApp(DnDCTk):
         labels_frame.pack(fill="x")
 
         self.status_label = ctk.CTkLabel(
-            labels_frame, text="Ожидание файла", font=ui.FONT_SMALL, anchor="w",
+            labels_frame, text=self.tr("STATUS_IDLE"), font=ui.FONT_SMALL, anchor="w",
             text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"],
         )
         self.status_label.pack(side="left")
@@ -169,7 +242,7 @@ class LexoraApp(DnDCTk):
         self.search_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 8))
 
         self.search_entry = ctk.CTkEntry(
-            self.search_frame, placeholder_text="Поиск по тексту...", font=ui.FONT_SMALL,
+            self.search_frame, placeholder_text=self.tr("SEARCH_PLACEHOLDER"), font=ui.FONT_SMALL,
             fg_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], border_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"]
         )
         self.search_entry.pack(side="left", fill="x", expand=True)
@@ -192,7 +265,7 @@ class LexoraApp(DnDCTk):
         self.btn_search_down.pack(side="left", padx=(5, 10))
 
         self.search_count_label = ctk.CTkLabel(
-            self.search_frame, text="Найдено: 0", font=ui.FONT_SMALL, text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"]
+            self.search_frame, text=self.tr("SEARCH_FOUND") + "0", font=ui.FONT_SMALL, text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"]
         )
         self.search_count_label.pack(side="right", padx=(0, 0))
 
@@ -214,16 +287,50 @@ class LexoraApp(DnDCTk):
         cards_outer = ctk.CTkFrame(body_frame, fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"],
                                     corner_radius=ui.CORNER_RADIUS_DEFAULT)
         cards_outer.grid(row=0, column=1, rowspan=2, sticky="nsew")
-        ctk.CTkLabel(cards_outer, text="СПИКЕРЫ", font=ui.FONT_SMALL,
-                     text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"]).pack(anchor="w", padx=14, pady=(12, 4))
+        self.header_speakers_label = ctk.CTkLabel(cards_outer, text=self.tr("HEADER_SPEAKERS"), font=ui.FONT_SMALL,
+                     text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"])
+        self.header_speakers_label.pack(anchor="w", padx=14, pady=(12, 4))
 
         self.cards_panel = ctk.CTkScrollableFrame(cards_outer, fg_color="transparent")
         self.cards_panel.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.cards_empty_label = ctk.CTkLabel(
-            self.cards_panel, text="Появятся после диаризации", font=ui.FONT_SMALL,
+            self.cards_panel, text=self.tr("CARDS_EMPTY"), font=ui.FONT_SMALL,
             text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"], wraplength=160,
         )
         self.cards_empty_label.pack(pady=20)
+
+    def tr(self, key: str) -> str:
+        lang_dict = LOCALIZATION_DATA.get(self.current_lang, LOCALIZATION_DATA["RU"])
+        return lang_dict.get(key, LOCALIZATION_DATA["RU"].get(key, key))
+
+    def _cycle_language(self):
+        langs = ["RU", "UK", "EN"]
+        idx = langs.index(self.current_lang)
+        self.current_lang = langs[(idx + 1) % len(langs)]
+        
+        self.btn_lang.configure(text=self.current_lang)
+        self.btn_select.configure(text=self.tr("BTN_SELECT"))
+        self.btn_stop.configure(text=self.tr("BTN_STOP"))
+        self.btn_copy.configure(text=self.tr("BTN_COPY"))
+        
+        current_save_text = self.btn_save.get()
+        default_texts = [LOCALIZATION_DATA[l]["BTN_SAVE_DEFAULT"] for l in langs]
+        if current_save_text in default_texts:
+            self.btn_save.set(self.tr("BTN_SAVE_DEFAULT"))
+            
+        self.btn_settings.configure(text=self.tr("BTN_SETTINGS"))
+        self.switch_timecodes.configure(text=self.tr("SWITCH_TIMECODES"))
+        self.switch_diarization.configure(text=self.tr("SWITCH_DIARIZATION"))
+        
+        if not self.transcribed_segments and not self.is_running:
+            self.status_label.configure(text=self.tr("STATUS_IDLE"))
+            
+        self.search_entry.configure(placeholder_text=self.tr("SEARCH_PLACEHOLDER"))
+        self.header_speakers_label.configure(text=self.tr("HEADER_SPEAKERS"))
+        self.cards_empty_label.configure(text=self.tr("CARDS_EMPTY"))
+        self.drop_zone.hint_label.configure(text=self.tr("DROP_ZONE"))
+        
+        self._execute_text_search()
 
     def _fg(self, theme_key: str) -> str:
         light, dark = ui.THEME_NEURAL_OBSIDIAN[theme_key]
@@ -244,7 +351,7 @@ class LexoraApp(DnDCTk):
         self.current_match_idx = -1
         
         if not query:
-            self.search_count_label.configure(text="Найдено: 0")
+            self.search_count_label.configure(text=self.tr("SEARCH_FOUND") + "0")
             return
             
         start_pos = "1.0"
@@ -264,7 +371,7 @@ class LexoraApp(DnDCTk):
             self.current_match_idx = 0
             self._highlight_current_match()
         else:
-            self.search_count_label.configure(text="Найдено: 0")
+            self.search_count_label.configure(text=self.tr("SEARCH_FOUND") + "0")
 
     def _highlight_current_match(self):
         if not self.search_matches or self.current_match_idx < 0:
@@ -276,7 +383,7 @@ class LexoraApp(DnDCTk):
         self._raw_textbox.see(start_pos)
         
         total = len(self.search_matches)
-        self.search_count_label.configure(text=f"Найдено: {self.current_match_idx + 1}/{total}")
+        self.search_count_label.configure(text=f"{self.tr('SEARCH_FOUND')}{self.current_match_idx + 1}/{total}")
 
     def _search_navigate_up(self):
         if not self.search_matches:
@@ -416,7 +523,7 @@ class LexoraApp(DnDCTk):
 
     def save_vad_settings(self, updated_config):
         self.vad_config = updated_config
-        self.system_log_ui(f"\n[+] Новая калибровка VAD применена в рантайме.")
+        self.system_log_ui(f"\n{self.tr('LOG_VAD_INJECT')}")
 
     def start_processing(self, filepath=None):
         if self.is_running:
@@ -465,7 +572,7 @@ class LexoraApp(DnDCTk):
 
     def stop_processing(self):
         if getattr(self, 'is_running', False):
-            self.system_log_ui("\n[!] Остановка процесса по команде пользователя. Ожидание завершения потока...")
+            self.system_log_ui(f"\n{self.tr('LOG_STOP_SIGNAL')}")
             self.btn_stop.configure(state="disabled")
             if hasattr(self, 'cancel_event'):
                 self.cancel_event.set()
@@ -475,7 +582,7 @@ class LexoraApp(DnDCTk):
     def _await_worker_shutdown(self):
         if hasattr(self, 'worker') and self.worker.is_alive():
             if time.monotonic() - self._shutdown_start_time > 15.0:
-                self.system_log_ui("\n[!] Превышено время ожидания завершения потока. Возврат в рабочий режим.")
+                self.system_log_ui(f"\n{self.tr('LOG_STOP_TIMEOUT')}")
                 self._reset_ui_state()
             else:
                 self.after(150, self._await_worker_shutdown)
@@ -498,9 +605,9 @@ class LexoraApp(DnDCTk):
                     device = self.last_device
                     vram_used = getattr(self, 'last_vram', 0.0)
                     if device == "cuda":
-                        self.telemetry_label.configure(text=f"⚙️ CUDA VRAM: {vram_used:.2f} GB | Статус: {data}")
+                        self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CUDA')}: {vram_used:.2f} GB | Статус: {data}")
                     else:
-                        self.telemetry_label.configure(text=f"⚙️ Вычисления: CPU RAM | Статус: {data}")
+                        self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CPU')} | Статус: {data}")
                 else:
                     self.telemetry_label.configure(text=f"Статус: {data}")
             elif msg_type == "TELEMETRY":
@@ -509,9 +616,9 @@ class LexoraApp(DnDCTk):
                 self.last_vram = vram_used
                 status_text = getattr(self, 'current_status_text', 'Обработка...')
                 if device == "cuda":
-                    self.telemetry_label.configure(text=f"⚙️ CUDA VRAM: {vram_used:.2f} GB | Статус: {status_text}")
+                    self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CUDA')}: {vram_used:.2f} GB | Статус: {status_text}")
                 else:
-                    self.telemetry_label.configure(text=f"⚙️ Вычисления: CPU RAM | Статус: {status_text}")
+                    self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CPU')} | Статус: {status_text}")
             elif msg_type == "PROGRESS": self.progressbar.set(data)
             elif msg_type == "LOG": self.system_log_ui(data)
             elif msg_type == "SEGMENT":
@@ -543,10 +650,10 @@ class LexoraApp(DnDCTk):
         self.switch_diarization.configure(state="normal")
         self.telemetry_label.configure(text="")
         if not self.transcribed_segments:
-            self.status_label.configure(text="Ожидание файла")
+            self.status_label.configure(text=self.tr("STATUS_IDLE"))
             
         self.search_entry.delete(0, "end")
-        self.search_count_label.configure(text="Найдено: 0")
+        self.search_count_label.configure(text=self.tr("SEARCH_FOUND") + "0")
         self._raw_textbox.tag_remove("search_highlight", "1.0", "end")
         self._raw_textbox.tag_remove("search_active_highlight", "1.0", "end")
         self.search_matches = []
@@ -555,7 +662,7 @@ class LexoraApp(DnDCTk):
     def _on_save_dropdown_click(self, choice: str):
         if not self.current_audio_path or not self.transcribed_segments:
             messagebox.showwarning("Внимание", "Нет данных для сохранения!")
-            self.btn_save.set("Сохранить как...")
+            self.btn_save.set(self.tr("BTN_SAVE_DEFAULT"))
             return
 
         base_name = os.path.splitext(os.path.basename(self.current_audio_path))[0]
@@ -595,7 +702,7 @@ class LexoraApp(DnDCTk):
             )
             if target_path: self._export_csv(target_path)
 
-        self.btn_save.set("Сохранить как...")
+        self.btn_save.set(self.tr("BTN_SAVE_DEFAULT"))
 
     def _export_txt(self, target_path: str):
         try:
@@ -678,7 +785,7 @@ class LexoraApp(DnDCTk):
                 })
                 
             export_data = {
-                "program": "Lexora v1.5.6",
+                "program": "Lexora v1.6.1",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data
