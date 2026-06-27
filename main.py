@@ -39,7 +39,10 @@ LOCALIZATION_DATA = {
         "BTN_LOAD": "Открыть",
         "BTN_DELETE": "Удалить",
         "TAB_SPEAKERS": "Спикеры",
-        "TAB_HISTORY": "История"
+        "TAB_HISTORY": "История",
+        "BTN_CLEAR_ALL": "Очистить всю историю",
+        "CONFIRM_TITLE": "Удаление истории",
+        "CONFIRM_MSG": "Вы уверены, что хотите БЕЗВОЗВРАТНО удалить всю историю сессий и транскрипций?"
     },
     "UK": {
         "BTN_SELECT": "Обрати файл",
@@ -64,7 +67,10 @@ LOCALIZATION_DATA = {
         "BTN_LOAD": "Відкрити",
         "BTN_DELETE": "Видалити",
         "TAB_SPEAKERS": "Спікери",
-        "TAB_HISTORY": "Історія"
+        "TAB_HISTORY": "Історія",
+        "BTN_CLEAR_ALL": "Очистити всю історію",
+        "CONFIRM_TITLE": "Видалення історії",
+        "CONFIRM_MSG": "Ви впевнені, що хочете БЕЗПОВОРОТНО видалити всю історію сесій та транскрипцій?"
     },
     "EN": {
         "BTN_SELECT": "Select File",
@@ -89,7 +95,10 @@ LOCALIZATION_DATA = {
         "BTN_LOAD": "Open",
         "BTN_DELETE": "Delete",
         "TAB_SPEAKERS": "Speakers",
-        "TAB_HISTORY": "History"
+        "TAB_HISTORY": "History",
+        "BTN_CLEAR_ALL": "Clear all history",
+        "CONFIRM_TITLE": "Delete History",
+        "CONFIRM_MSG": "Are you sure you want to PERMANENTLY delete all session and transcription history?"
     }
 }
 
@@ -109,7 +118,7 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.7.0")
+        self.title("Lexora v1.7.1")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -338,6 +347,13 @@ class LexoraApp(DnDCTk):
         self.history_panel = ctk.CTkScrollableFrame(self.history_frame, fg_color="transparent")
         self.history_panel.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         
+        self.btn_clear_all = ctk.CTkButton(
+            self.history_frame, text=self.tr("BTN_CLEAR_ALL"), font=ui.FONT_SMALL, height=28,
+            fg_color="#a32a2a", hover_color="#c93434", corner_radius=ui.CORNER_RADIUS_DEFAULT,
+            command=self._clear_all_history_action
+        )
+        self.btn_clear_all.pack(fill="x", padx=8, pady=(0, 8))
+        
         self._switch_right_tab("speakers")
         self._refresh_history_ui()
 
@@ -497,6 +513,18 @@ class LexoraApp(DnDCTk):
         except Exception as e:
             self.system_log_ui(f"[-] Ошибка удаления сессии: {e}")
 
+    def _clear_all_history_action(self):
+        if messagebox.askyesno(self.tr("CONFIRM_TITLE"), self.tr("CONFIRM_MSG")):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("PRAGMA foreign_keys = ON;")
+                    conn.execute("DELETE FROM sessions;")
+                    conn.commit()
+                self._refresh_history_ui()
+                self._reset_ui_state()
+            except Exception as e:
+                self.system_log_ui(f"[-] Ошибка очистки истории: {e}")
+
     def _switch_right_tab(self, tab_name):
         if tab_name == "speakers":
             self.history_frame.pack_forget()
@@ -541,6 +569,7 @@ class LexoraApp(DnDCTk):
         
         self.btn_tab_speakers.configure(text=self.tr("TAB_SPEAKERS"))
         self.btn_tab_history.configure(text=self.tr("TAB_HISTORY"))
+        self.btn_clear_all.configure(text=self.tr("BTN_CLEAR_ALL"))
         self._refresh_history_ui()
         
         self._execute_text_search()
@@ -999,7 +1028,7 @@ class LexoraApp(DnDCTk):
                 })
                 
             export_data = {
-                "program": "Lexora v1.7.0",
+                "program": "Lexora v1.7.1",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data
