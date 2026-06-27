@@ -29,7 +29,7 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.5.3")
+        self.title("Lexora v1.5.4")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -130,11 +130,20 @@ class LexoraApp(DnDCTk):
         status_frame = ctk.CTkFrame(self, fg_color="transparent")
         status_frame.pack(padx=14, pady=(0, 10), fill="x")
 
+        labels_frame = ctk.CTkFrame(status_frame, fg_color="transparent")
+        labels_frame.pack(fill="x")
+
         self.status_label = ctk.CTkLabel(
-            status_frame, text="Ожидание файла", font=ui.FONT_SMALL, anchor="w",
+            labels_frame, text="Ожидание файла", font=ui.FONT_SMALL, anchor="w",
             text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"],
         )
-        self.status_label.pack(fill="x")
+        self.status_label.pack(side="left")
+
+        self.telemetry_label = ctk.CTkLabel(
+            labels_frame, text="", font=ui.FONT_SMALL, anchor="e",
+            text_color=ui.THEME_NEURAL_OBSIDIAN["cyan_neon"],
+        )
+        self.telemetry_label.pack(side="right")
 
         self.progressbar = ctk.CTkProgressBar(
             status_frame, mode="determinate",
@@ -339,6 +348,10 @@ class LexoraApp(DnDCTk):
         self.textbox.configure(state="disabled")
         self.progressbar.set(0)
         self.status_label.configure(text=f"Выбран файл: {os.path.basename(filepath)}")
+        self.telemetry_label.configure(text="")
+        self.current_status_text = "Инициализация..."
+        self.last_device = "cpu"
+        self.last_vram = 0.0
 
         self.task_queue = queue.Queue()
         self.cancel_event = threading.Event()
@@ -381,7 +394,26 @@ class LexoraApp(DnDCTk):
             
             messages_processed += 1
                 
-            if msg_type == "STATUS": self.status_label.configure(text=data)
+            if msg_type == "STATUS": 
+                self.current_status_text = data
+                if hasattr(self, 'last_device'):
+                    device = self.last_device
+                    vram_used = getattr(self, 'last_vram', 0.0)
+                    if device == "cuda":
+                        self.telemetry_label.configure(text=f"⚙️ CUDA VRAM: {vram_used:.2f} GB | Статус: {data}")
+                    else:
+                        self.telemetry_label.configure(text=f"⚙️ Вычисления: CPU RAM | Статус: {data}")
+                else:
+                    self.telemetry_label.configure(text=f"Статус: {data}")
+            elif msg_type == "TELEMETRY":
+                vram_used, device = data
+                self.last_device = device
+                self.last_vram = vram_used
+                status_text = getattr(self, 'current_status_text', 'Обработка...')
+                if device == "cuda":
+                    self.telemetry_label.configure(text=f"⚙️ CUDA VRAM: {vram_used:.2f} GB | Статус: {status_text}")
+                else:
+                    self.telemetry_label.configure(text=f"⚙️ Вычисления: CPU RAM | Статус: {status_text}")
             elif msg_type == "PROGRESS": self.progressbar.set(data)
             elif msg_type == "LOG": self.system_log_ui(data)
             elif msg_type == "SEGMENT":
@@ -411,6 +443,9 @@ class LexoraApp(DnDCTk):
         self.btn_stop.configure(state="disabled")
         self.btn_settings.configure(state="normal")  # Разблокировка калибровки VAD
         self.switch_diarization.configure(state="normal")
+        self.telemetry_label.configure(text="")
+        if not self.transcribed_segments:
+            self.status_label.configure(text="Ожидание файла")
 
     def _on_save_dropdown_click(self, choice: str):
         if not self.current_audio_path or not self.transcribed_segments:
@@ -538,7 +573,7 @@ class LexoraApp(DnDCTk):
                 })
                 
             export_data = {
-                "program": "Lexora v1.5.3",
+                "program": "Lexora v1.5.4",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data

@@ -12,7 +12,7 @@ from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 
 # ==============================================================================
-# WORKER ПОТОКОВ (ИЗОЛЯЦИЯ ВЫЧИСЛЕНИЙ)
+# WORKER ПОТОКОВ (ИЗОЛЯЦИЯ ВЫЧИСЛЕНИЙ И ТЕЛЕМЕТРИЯ)
 # ==============================================================================
 class WorkerDiarizationProgressHook:
     STEP_LABELS = {
@@ -28,10 +28,11 @@ class WorkerDiarizationProgressHook:
         "discrete_diarization": (0.85, 1.00),
     }
 
-    def __init__(self, task_queue, start_fraction=0.0, end_fraction=1.0):
+    def __init__(self, task_queue, start_fraction=0.0, end_fraction=1.0, device="cpu"):
         self.queue = task_queue
         self.start_fraction = start_fraction
         self.end_fraction = end_fraction
+        self.device = device
 
     def __call__(self, step_name, step_artifact, file=None, total=None, completed=None):
         label = self.STEP_LABELS.get(step_name, step_name)
@@ -47,6 +48,15 @@ class WorkerDiarizationProgressHook:
         global_fraction = self.start_fraction + span * phase_fraction
         self.queue.put(("STATUS", text))
         self.queue.put(("PROGRESS", global_fraction))
+        
+        # Сбор телеметрии на этапах Pyannote
+        vram_used = 0.0
+        if self.device == "cuda":
+            try:
+                vram_used = torch.cuda.memory_allocated() / (1024 ** 3)
+            except Exception:
+                pass
+        self.queue.put(("TELEMETRY", (vram_used, self.device)))
 
 
 class AudioProcessingWorker(threading.Thread):
@@ -77,6 +87,15 @@ class AudioProcessingWorker(threading.Thread):
         secs, ms = divmod(remainder, 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}{decimal_separator}{ms:03d}"
 
+    def _send_telemetry(self, device):
+        vram_used = 0.0
+        if device == "cuda":
+            try:
+                vram_used = torch.cuda.memory_allocated() / (1024 ** 3)
+            except Exception:
+                pass
+        self.queue.put(("TELEMETRY", (vram_used, device)))
+
     def run(self):
         # Предотвращение OpenMP Deadlock при инициализации PyTorch во вторичном потоке
         torch.set_num_threads(1)
@@ -94,6 +113,7 @@ class AudioProcessingWorker(threading.Thread):
         try:
             self.queue.put(("STATUS", "Конвертация аудио (FFmpeg)..."))
             self.queue.put(("PROGRESS", 0.02))
+            self._send_telemetry(device)
             temp_wav_path = self._convert_to_wav(self.audio_file)
             current_audio = temp_wav_path
 
@@ -103,6 +123,7 @@ class AudioProcessingWorker(threading.Thread):
 
             self.queue.put(("STATUS", "Загрузка модели Whisper..."))
             self.queue.put(("PROGRESS", 0.06))
+            self._send_telemetry(device)
             
             compute_type = "int8_float16" if device == "cuda" else "int8"
             whisper_model = WhisperModel(bootstrap.WHISPER_MODEL_PATH, device=device, compute_type=compute_type)
@@ -124,6 +145,7 @@ class AudioProcessingWorker(threading.Thread):
                 
                 self.queue.put(("STATUS", prog_text))
                 self.queue.put(("PROGRESS", prog_val))
+                self._send_telemetry(device)
 
             if whisper_model is not None:
                 del whisper_model
@@ -139,6 +161,7 @@ class AudioProcessingWorker(threading.Thread):
             if self.use_diarization:
                 self.queue.put(("STATUS", "Загрузка модели Pyannote..."))
                 self.queue.put(("PROGRESS", 0.06 + transcribe_budget))
+                self._send_telemetry(device)
                 try:
                     diarize_model = Pipeline.from_pretrained(bootstrap.DIARIZATION_CONFIG_PATH)
                     
@@ -193,7 +216,7 @@ class AudioProcessingWorker(threading.Thread):
                         diarize_model.to(torch.device("cuda"))
                     
                     self.queue.put(("LOG", "\n[*] Запуск разделения по ролям (Pyannote)..."))
-                    hook = WorkerDiarizationProgressHook(self.queue, start_fraction=0.06 + transcribe_budget, end_fraction=1.0)
+                    hook = WorkerDiarizationProgressHook(self.queue, start_fraction=0.06 + transcribe_budget, end_fraction=1.0, device=device)
                     
                     with torch.inference_mode():
                         diarization_result = diarize_model(current_audio, hook=hook)
@@ -234,6 +257,7 @@ class AudioProcessingWorker(threading.Thread):
             if not self.cancel_event.is_set():
                 self.queue.put(("STATUS", "Готово"))
                 self.queue.put(("PROGRESS", 1.0))
+                self._send_telemetry(device)
                 self.queue.put(("DONE", (self.transcribed_segments, diarization_result)))
 
         except Exception as e:
