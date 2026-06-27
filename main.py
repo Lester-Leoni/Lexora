@@ -3,6 +3,9 @@ import os
 import time
 import queue
 import threading
+import json
+import csv
+import datetime
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from tkinterdnd2 import TkinterDnD
@@ -26,7 +29,7 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora")
+        self.title("Lexora v1.5.3")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -82,7 +85,7 @@ class LexoraApp(DnDCTk):
 
         self.btn_save = ctk.CTkOptionMenu(
             self.top_frame,
-            values=["Текст (.txt)", "Субтитры (.srt)", "Субтитры (.vtt)"],
+            values=["Текст (.txt)", "Субтитры (.srt)", "Субтитры (.vtt)", "Данные JSON (.json)", "Таблица CSV (.csv)"],
             font=ui.FONT_BODY,
             fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"],
             button_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"],
@@ -438,6 +441,20 @@ class LexoraApp(DnDCTk):
             )
             if target_path: self._export_vtt(target_path)
 
+        elif choice == "Данные JSON (.json)":
+            target_path = filedialog.asksaveasfilename(
+                title="Сохранить данные JSON", initialfile=base_name,
+                defaultextension=".json", filetypes=[("JSON Data", "*.json")]
+            )
+            if target_path: self._export_json(target_path)
+
+        elif choice == "Таблица CSV (.csv)":
+            target_path = filedialog.asksaveasfilename(
+                title="Сохранить таблицу CSV", initialfile=base_name,
+                defaultextension=".csv", filetypes=[("CSV Table", "*.csv")]
+            )
+            if target_path: self._export_csv(target_path)
+
         self.btn_save.set("Сохранить как...")
 
     def _export_txt(self, target_path: str):
@@ -493,6 +510,78 @@ class LexoraApp(DnDCTk):
                     f.write(f"{i}\n{vtt_start} --> {vtt_end}\n{processed_text}\n\n")
             self.system_log_ui(f"[+] Экспортированы субтитры VTT: {os.path.basename(target_path)}")
         except Exception as e: messagebox.showerror("Ошибка", f"Не удалось сохранить VTT:\n{str(e)}")
+
+    def _export_json(self, target_path: str):
+        try:
+            segments_data = []
+            for i, (start, end, text) in enumerate(self.transcribed_segments):
+                speaker_raw_id = None
+                speaker_display_name = None
+                processed_text = text
+                
+                if text.startswith("[") and "] " in text:
+                    maybe_speaker, _, rest = text[1:].partition("] ")
+                    if maybe_speaker.startswith("SPEAKER_"):
+                        speaker_raw_id = maybe_speaker
+                        speaker_display_name = self.speaker_names_map.get(maybe_speaker, maybe_speaker)
+                        processed_text = rest
+                        
+                segments_data.append({
+                    "id": i,
+                    "start_seconds": round(start, 3),
+                    "end_seconds": round(end, 3),
+                    "start_timecode": self.format_time(start, decimal_separator=","),
+                    "end_timecode": self.format_time(end, decimal_separator=","),
+                    "speaker_raw_id": speaker_raw_id,
+                    "speaker_display_name": speaker_display_name,
+                    "text": processed_text
+                })
+                
+            export_data = {
+                "program": "Lexora v1.5.3",
+                "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
+                "segments": segments_data
+            }
+            
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=4)
+                
+            self.system_log_ui(f"[+] Экспортирован JSON: {os.path.basename(target_path)}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить JSON:\n{str(e)}")
+
+    def _export_csv(self, target_path: str):
+        try:
+            with open(target_path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f, delimiter=";")
+                writer.writerow(["ID", "Start_Seconds", "End_Seconds", "Start_Timecode", "End_Timecode", "Speaker_ID", "Speaker_Name", "Text"])
+                
+                for i, (start, end, text) in enumerate(self.transcribed_segments):
+                    speaker_raw_id = ""
+                    speaker_display_name = ""
+                    processed_text = text
+                    
+                    if text.startswith("[") and "] " in text:
+                        maybe_speaker, _, rest = text[1:].partition("] ")
+                        if maybe_speaker.startswith("SPEAKER_"):
+                            speaker_raw_id = maybe_speaker
+                            speaker_display_name = self.speaker_names_map.get(maybe_speaker, maybe_speaker)
+                            processed_text = rest
+                            
+                    writer.writerow([
+                        i,
+                        round(start, 3),
+                        round(end, 3),
+                        self.format_time(start, decimal_separator=","),
+                        self.format_time(end, decimal_separator=","),
+                        speaker_raw_id if speaker_raw_id else "",
+                        speaker_display_name if speaker_display_name else "",
+                        processed_text
+                    ])
+            self.system_log_ui(f"[+] Экспортирован CSV: {os.path.basename(target_path)}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить CSV:\n{str(e)}")
 
 
 if __name__ == "__main__":
