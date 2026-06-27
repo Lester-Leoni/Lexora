@@ -43,7 +43,7 @@ class LexoraApp(DnDCTk):
         self.show_time_var = ctk.BooleanVar(value=True)
         self.use_roles_var = ctk.BooleanVar(value=False)
 
-        # Начальная конфигурация ИИ-фильтров VAD по умолчанию
+        # Начальная конфигурация ИИ-фильтров VAD по умолчанию (Паритет с пресетом "Стандарт")
         self.vad_config = {
             "segmentation": {
                 "threshold": 0.50,

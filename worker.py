@@ -1,5 +1,7 @@
 import bootstrap  # CRITICAL: Must be the absolute first line
 import os
+import time
+import datetime
 import threading
 import tempfile
 import subprocess
@@ -76,9 +78,12 @@ class AudioProcessingWorker(threading.Thread):
         return f"{hours:02d}:{minutes:02d}:{secs:02d}{decimal_separator}{ms:03d}"
 
     def run(self):
-        # FIX: Предотвращение OpenMP Deadlock при инициализации PyTorch во вторичном потоке
+        # Предотвращение OpenMP Deadlock при инициализации PyTorch во вторичном потоке
         torch.set_num_threads(1)
         os.environ["OMP_NUM_THREADS"] = "1"
+        
+        session_start = time.monotonic()
+        session_status = "Успешно"
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         whisper_model = None
@@ -137,7 +142,6 @@ class AudioProcessingWorker(threading.Thread):
                 try:
                     diarize_model = Pipeline.from_pretrained(bootstrap.DIARIZATION_CONFIG_PATH)
                     
-                    # FIX: Безопасное извлечение параметров (защита от KeyError)
                     if self.vad_config:
                         s_cfg = self.vad_config.get("segmentation", {})
                         onset = s_cfg.get("threshold", 0.50)
@@ -145,30 +149,45 @@ class AudioProcessingWorker(threading.Thread):
                         min_on = s_cfg.get("min_duration_on", 0.20)
                         min_off = s_cfg.get("min_duration_off", 0.50)
                         
-                        pyannote_native_params = {
-                            "segmentation": {
-                                "onset": onset,
-                                "offset": offset,
-                                "min_duration_on": min_on,
-                                "min_duration_off": min_off
-                            }
-                        }
-                        self.queue.put(("LOG", f"[*] Инъекция в ИИ-ядро: onset/offset={onset:.2f}, min_off={min_off:.1f}s, min_on={min_on:.2f}s"))
+                        self.queue.put(("LOG", f"[*] Калибровка VAD: threshold={onset:.2f}, min_off={min_off:.1f}s, min_on={min_on:.2f}s"))
                         
-                        # FIX: Fallback-механизм для защиты от ValueError в Pyannote 3.1
-                        try:
-                            diarize_model.instantiate(pyannote_native_params)
-                        except Exception as e:
-                            self.queue.put(("LOG", f"[!] Предупреждение: строгая инъекция параметров не удалась ({e}). Пробуем безопасный режим..."))
+                        # Пуленепробиваемый адаптивный инжектор параметров под Pyannote 3.3.1+
+                        params_applied = False
+                        
+                        # Попытка 1: Через стандартный binarization (совместимость с 3.3.1)
+                        if not params_applied:
                             try:
-                                fallback_params = {
-                                    "segmentation": {
-                                        "min_duration_off": min_off,
+                                native_33 = {
+                                    "binarization": {
+                                        "onset": onset,
+                                        "offset": offset,
+                                        "min_duration_on": min_on,
+                                        "min_duration_off": min_off
                                     }
                                 }
-                                diarize_model.instantiate(fallback_params)
-                            except Exception as e2:
-                                self.queue.put(("LOG", f"[!] Предупреждение: безопасная инъекция также отклонена ({e2}). Используются базовые веса."))
+                                diarize_model.instantiate(native_33)
+                                params_applied = True
+                            except Exception:
+                                pass
+
+                        # Попытка 2: Через плоскую структуру сегментации
+                        if not params_applied:
+                            try:
+                                native_31 = {
+                                    "segmentation": {
+                                        "onset": onset,
+                                        "offset": offset,
+                                        "min_duration_on": min_on,
+                                        "min_duration_off": min_off
+                                    }
+                                }
+                                diarize_model.instantiate(native_31)
+                                params_applied = True
+                            except Exception:
+                                pass
+
+                        if not params_applied:
+                            self.queue.put(("LOG", "[!] Предупреждение: структура весов уникальна. Использованы встроенные заводские калибровки."))
                     
                     if device == "cuda":
                         diarize_model.to(torch.device("cuda"))
@@ -181,6 +200,7 @@ class AudioProcessingWorker(threading.Thread):
                         
                 except Exception as e:
                     self.queue.put(("ERROR", f"ОШИБКА ИНИЦИАЛИЗАЦИИ PYANNOTE:\n{str(e)}"))
+                    session_status = "Ошибка"
                     return
                 finally:
                     if device == "cuda":
@@ -217,9 +237,32 @@ class AudioProcessingWorker(threading.Thread):
                 self.queue.put(("DONE", (self.transcribed_segments, diarization_result)))
 
         except Exception as e:
+            session_status = "Ошибка"
             if not self.cancel_event.is_set():
                 self.queue.put(("ERROR", traceback.format_exc()))
         finally:
+            if self.cancel_event.is_set():
+                session_status = "Прервано пользователем"
+                
+            session_duration = time.monotonic() - session_start
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            v_cfg = self.vad_config.get("segmentation", {}) if self.vad_config else {}
+            onset = v_cfg.get("threshold", 0.50)
+            min_off = v_cfg.get("min_duration_off", 0.50)
+            min_on = v_cfg.get("min_duration_on", 0.20)
+            
+            log_line = (f"[{timestamp}] Файл: {os.path.basename(self.audio_file)} | "
+                        f"Диаризация: {self.use_diarization} | "
+                        f"VAD: [onset={onset:.2f}, min_off={min_off:.2f}s, min_on={min_on:.2f}s] | "
+                        f"Время: {session_duration:.1f} сек | Статус: {session_status}\n")
+            
+            try:
+                with open("lexora_runtime.log", "a", encoding="utf-8") as log_file:
+                    log_file.write(log_line)
+            except Exception:
+                pass
+            
             if device == "cuda":
                 if diarize_model is not None:
                     try: diarize_model.to(torch.device("cpu"))

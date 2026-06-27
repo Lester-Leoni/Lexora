@@ -207,7 +207,7 @@ class VadSettingsWindow(ctk.CTkToplevel):
         self.on_save_callback = on_save_callback
         
         self.title("Калибровка ИИ-фильтров VAD")
-        self.geometry("480x420")
+        self.geometry("480x470")
         self.resizable(False, False)
         self.configure(fg_color=THEME_NEURAL_OBSIDIAN["window_bg"])
         self.transient(master)
@@ -218,13 +218,41 @@ class VadSettingsWindow(ctk.CTkToplevel):
 
         self.update_idletasks()
         x = master.winfo_x() + (master.winfo_width() // 2) - (480 // 2)
-        y = master.winfo_y() + (master.winfo_height() // 2) - (420 // 2)
+        y = master.winfo_y() + (master.winfo_height() // 2) - (470 // 2)
         self.geometry(f"+{x}+{y}")
 
         main_frame = ctk.CTkFrame(self, fg_color=THEME_NEURAL_OBSIDIAN["frame_bg"], corner_radius=CORNER_RADIUS_DEFAULT)
         main_frame.pack(fill="both", expand=True, padx=16, pady=16)
 
         ctk.CTkLabel(main_frame, text="Калибровка детектора активности голоса", font=FONT_HEADING, text_color=THEME_NEURAL_OBSIDIAN["cyan_neon"]).pack(pady=(14, 14))
+
+        # Контейнер пресетов
+        presets_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        presets_frame.pack(fill="x", padx=14, pady=(0, 10))
+
+        btn_studio = ctk.CTkButton(
+            presets_frame, text="Студия", font=FONT_SMALL,
+            fg_color=THEME_NEURAL_OBSIDIAN["card_bg"], border_width=1, border_color=THEME_NEURAL_OBSIDIAN["cyan_dim"],
+            hover_color=THEME_NEURAL_OBSIDIAN["cyan_neon"], text_color=THEME_NEURAL_OBSIDIAN["text_main"],
+            command=lambda: self._apply_preset_values("Студия")
+        )
+        btn_studio.pack(side="left", expand=True, padx=(0, 5))
+
+        btn_standard = ctk.CTkButton(
+            presets_frame, text="Стандарт", font=FONT_SMALL,
+            fg_color=THEME_NEURAL_OBSIDIAN["card_bg"], border_width=1, border_color=THEME_NEURAL_OBSIDIAN["cyan_dim"],
+            hover_color=THEME_NEURAL_OBSIDIAN["cyan_neon"], text_color=THEME_NEURAL_OBSIDIAN["text_main"],
+            command=lambda: self._apply_preset_values("Стандарт")
+        )
+        btn_standard.pack(side="left", expand=True, padx=5)
+
+        btn_noise = ctk.CTkButton(
+            presets_frame, text="Шум / Кафе", font=FONT_SMALL,
+            fg_color=THEME_NEURAL_OBSIDIAN["card_bg"], border_width=1, border_color=THEME_NEURAL_OBSIDIAN["cyan_dim"],
+            hover_color=THEME_NEURAL_OBSIDIAN["cyan_neon"], text_color=THEME_NEURAL_OBSIDIAN["text_main"],
+            command=lambda: self._apply_preset_values("Шум / Кафе")
+        )
+        btn_noise.pack(side="left", expand=True, padx=(5, 0))
 
         # Слайдер 1: Порог чувствительности (Threshold)
         frame_onset = ctk.CTkFrame(main_frame, fg_color=THEME_NEURAL_OBSIDIAN["card_bg"], corner_radius=8)
@@ -275,6 +303,23 @@ class VadSettingsWindow(ctk.CTkToplevel):
         btn_save.pack(pady=(10, 0))
 
         self._init_values()
+
+    def _apply_preset_values(self, preset_name):
+        if preset_name == "Студия":
+            t, off, on = 0.35, 0.50, 0.10
+        elif preset_name == "Стандарт":
+            t, off, on = 0.50, 0.50, 0.20
+        elif preset_name == "Шум / Кафе":
+            t, off, on = 0.65, 0.90, 0.35
+        else:
+            return
+
+        self.slider_thresh.set(t)
+        self._update_thresh(t)
+        self.slider_off.set(off)
+        self._update_off(off)
+        self.slider_on.set(on)
+        self._update_on(on)
 
     def _init_values(self):
         self.slider_thresh.set(self.config["segmentation"]["threshold"])
