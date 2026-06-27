@@ -29,7 +29,7 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.5.4")
+        self.title("Lexora v1.5.5")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -158,7 +158,23 @@ class LexoraApp(DnDCTk):
         body_frame.pack(padx=14, pady=(0, 14), fill="both", expand=True)
         body_frame.grid_columnconfigure(0, weight=3)
         body_frame.grid_columnconfigure(1, weight=1)
-        body_frame.grid_rowconfigure(0, weight=1)
+        body_frame.grid_rowconfigure(1, weight=1)
+
+        # Панель поиска
+        self.search_frame = ctk.CTkFrame(body_frame, fg_color="transparent")
+        self.search_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 8))
+
+        self.search_entry = ctk.CTkEntry(
+            self.search_frame, placeholder_text="Поиск по тексту...", font=ui.FONT_SMALL,
+            fg_color=ui.THEME_NEURAL_OBSIDIAN["card_bg"], border_color=ui.THEME_NEURAL_OBSIDIAN["cyan_dim"]
+        )
+        self.search_entry.pack(side="left", fill="x", expand=True)
+        self.search_entry.bind("<KeyRelease>", self._execute_text_search)
+
+        self.search_count_label = ctk.CTkLabel(
+            self.search_frame, text="Найдено: 0", font=ui.FONT_SMALL, text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"]
+        )
+        self.search_count_label.pack(side="right", padx=(10, 0))
 
         self.textbox = ctk.CTkTextbox(
             body_frame, state="disabled", font=ui.FONT_MONO,
@@ -166,16 +182,17 @@ class LexoraApp(DnDCTk):
             text_color=ui.THEME_NEURAL_OBSIDIAN["text_main"],
             corner_radius=ui.CORNER_RADIUS_DEFAULT,
         )
-        self.textbox.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.textbox.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
 
         self._raw_textbox = self.textbox._textbox
         self._raw_textbox.tag_config("ts", foreground=self._fg("text_dim"))
         self._raw_textbox.tag_config("spk", foreground=self._fg("cyan_neon"), font=("Consolas", 13, "bold"))
         self._raw_textbox.tag_config("seg_hover", background=self._fg("frame_bg"))
+        self._raw_textbox.tag_config("search_highlight", background=self._fg("cyan_neon"), foreground="#000000")
 
         cards_outer = ctk.CTkFrame(body_frame, fg_color=ui.THEME_NEURAL_OBSIDIAN["frame_bg"],
                                     corner_radius=ui.CORNER_RADIUS_DEFAULT)
-        cards_outer.grid(row=0, column=1, sticky="nsew")
+        cards_outer.grid(row=0, column=1, rowspan=2, sticky="nsew")
         ctk.CTkLabel(cards_outer, text="СПИКЕРЫ", font=ui.FONT_SMALL,
                      text_color=ui.THEME_NEURAL_OBSIDIAN["text_dim"]).pack(anchor="w", padx=14, pady=(12, 4))
 
@@ -198,6 +215,30 @@ class LexoraApp(DnDCTk):
         secs, ms = divmod(remainder, 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}{decimal_separator}{ms:03d}"
 
+    def _execute_text_search(self, event=None):
+        query = self.search_entry.get().lower().strip()
+        self._raw_textbox.tag_remove("search_highlight", "1.0", "end")
+        
+        if not query:
+            self.search_count_label.configure(text="Найдено: 0")
+            return
+            
+        count = 0
+        start_pos = "1.0"
+        query_len = len(query)
+        
+        while True:
+            start_pos = self._raw_textbox.search(query, start_pos, stopindex="end", nocase=True)
+            if not start_pos:
+                break
+            
+            end_pos = f"{start_pos}+{query_len}c"
+            self._raw_textbox.tag_add("search_highlight", start_pos, end_pos)
+            start_pos = end_pos
+            count += 1
+            
+        self.search_count_label.configure(text=f"Найдено: {count}")
+
     def redraw_interface(self):
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
@@ -205,6 +246,7 @@ class LexoraApp(DnDCTk):
             self._insert_segment_line(idx, start, end, text)
         self.textbox.see("end")
         self.textbox.configure(state="disabled")
+        self._execute_text_search()
 
     def _insert_segment_line(self, idx, start, end, text):
         seg_tag = f"seg_{idx}"
@@ -241,6 +283,7 @@ class LexoraApp(DnDCTk):
         self._insert_segment_line(idx, start, end, text)
         self.textbox.see("end")
         self.textbox.configure(state="disabled")
+        self._execute_text_search()
 
     def system_log_ui(self, text):
         self.textbox.configure(state="normal")
@@ -446,6 +489,10 @@ class LexoraApp(DnDCTk):
         self.telemetry_label.configure(text="")
         if not self.transcribed_segments:
             self.status_label.configure(text="Ожидание файла")
+            
+        self.search_entry.delete(0, "end")
+        self.search_count_label.configure(text="Найдено: 0")
+        self._raw_textbox.tag_remove("search_highlight", "1.0", "end")
 
     def _on_save_dropdown_click(self, choice: str):
         if not self.current_audio_path or not self.transcribed_segments:
@@ -573,7 +620,7 @@ class LexoraApp(DnDCTk):
                 })
                 
             export_data = {
-                "program": "Lexora v1.5.4",
+                "program": "Lexora v1.5.5",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data
