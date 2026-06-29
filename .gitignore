@@ -1,7 +1,9 @@
-model_weights/
+venv/
+.cache/
+releases/
 dist/
 build/
-*.exe
-*.spec
 __pycache__/
-*.pyc
+*.log
+*.spec
+model_weights/
