@@ -8,23 +8,18 @@ import subprocess
 import gc
 import traceback
 import torch
+import sys
+import json
+
+# Базовые STT импорты
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 
-class WorkerDiarizationProgressHook:
-    STEP_LABELS = {
-        "segmentation": "Поиск речевых сегментов",
-        "speaker_counting": "Оценка количества спикеров",
-        "embeddings": "Извлечение голосовых отпечатков",
-        "discrete_diarization": "Финальная кластеризация",
-    }
-    STEP_WEIGHTS = {
-        "segmentation": (0.00, 0.15),
-        "speaker_counting": (0.15, 0.20),
-        "embeddings": (0.20, 0.85),
-        "discrete_diarization": (0.85, 1.00),
-    }
+SUMMARY_TIMEOUT_SECONDS = 180   
+SUMMARY_N_CTX = 4096            
+SUMMARY_MAX_TOKENS = 512
 
+class WorkerDiarizationProgressHook:
     def __init__(self, task_queue, start_fraction=0.0, end_fraction=1.0, device="cpu"):
         self.queue = task_queue
         self.start_fraction = start_fraction
@@ -32,18 +27,18 @@ class WorkerDiarizationProgressHook:
         self.device = device
 
     def __call__(self, step_name, step_artifact, file=None, total=None, completed=None):
-        label = self.STEP_LABELS.get(step_name, step_name)
-        lo, hi = self.STEP_WEIGHTS.get(step_name, (0.0, 1.0))
+        lo, hi = (0.00, 0.15) if step_name == "segmentation" else (0.15, 0.20) if step_name == "speaker_counting" else (0.20, 0.85) if step_name == "embeddings" else (0.85, 1.00)
+        
         if total and completed is not None and total > 0:
             local_fraction = completed / total
-            text = f"{label} ({completed}/{total})"
         else:
             local_fraction = 1.0
-            text = label
+            
         phase_fraction = lo + (hi - lo) * local_fraction
         span = self.end_fraction - self.start_fraction
         global_fraction = self.start_fraction + span * phase_fraction
-        self.queue.put(("STATUS", text))
+        
+        self.queue.put(("STATUS", step_name))
         self.queue.put(("PROGRESS", global_fraction))
         
         vram_used = 0.0
@@ -73,7 +68,19 @@ class AudioProcessingWorker(threading.Thread):
         if os.name == 'nt':
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startupinfo, check=True)
+        
+        self.ffmpeg_proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startupinfo)
+        
+        while self.ffmpeg_proc.poll() is None:
+            if self.cancel_event and self.cancel_event.is_set():
+                self.ffmpeg_proc.kill()
+                self.ffmpeg_proc.wait()  # ИСПРАВЛЕНИЕ: Чистое завершение процесса
+                return None
+            time.sleep(0.1)
+            
+        if self.ffmpeg_proc.returncode != 0:
+            raise RuntimeError("FFmpeg завершился с ошибкой при конвертации файла.")
+            
         return temp_path
 
     def format_time(self, seconds, decimal_separator=","):
@@ -105,17 +112,17 @@ class AudioProcessingWorker(threading.Thread):
         diarization_result = None
 
         try:
-            self.queue.put(("STATUS", "Конвертация аудио (FFmpeg)..."))
+            self.queue.put(("STATUS", "WORKER_CONVERT"))
             self.queue.put(("PROGRESS", 0.02))
             self._send_telemetry(device)
             temp_wav_path = self._convert_to_wav(self.audio_file)
+            
+            if not temp_wav_path or self.cancel_event.is_set(): return
             current_audio = temp_wav_path
 
             self.queue.put(("LOG", f"[*] Инициализация оборудования: {device.upper()}"))
 
-            if self.cancel_event.is_set(): return
-
-            self.queue.put(("STATUS", "Загрузка модели Whisper..."))
+            self.queue.put(("STATUS", "WORKER_WHISPER"))
             self.queue.put(("PROGRESS", 0.06))
             self._send_telemetry(device)
             
@@ -131,10 +138,11 @@ class AudioProcessingWorker(threading.Thread):
                 if self.cancel_event.is_set(): break
                 seg_data = (segment.start, segment.end, segment.text.strip())
                 self.transcribed_segments.append(seg_data)
+                
                 self.queue.put(("SEGMENT", seg_data))
                 
                 local_fraction = min(segment.end / duration, 1.0) if duration else 1.0
-                prog_text = f"Транскрибация ({self.format_time(segment.end, ',')} / {self.format_time(duration, ',')})"
+                prog_text = f"WORKER_TRANSCRIBE ({self.format_time(segment.end, ',')} / {self.format_time(duration, ',')})"
                 prog_val = 0.06 + transcribe_budget * local_fraction
                 
                 self.queue.put(("STATUS", prog_text))
@@ -153,7 +161,7 @@ class AudioProcessingWorker(threading.Thread):
             self.queue.put(("LOG", "\n[+] Транскрибация завершена."))
 
             if self.use_diarization:
-                self.queue.put(("STATUS", "Загрузка модели Pyannote..."))
+                self.queue.put(("STATUS", "WORKER_PYANNOTE"))
                 self.queue.put(("PROGRESS", 0.06 + transcribe_budget))
                 self._send_telemetry(device)
                 try:
@@ -229,7 +237,7 @@ class AudioProcessingWorker(threading.Thread):
                 self.queue.put(("LOG", "[+] Разделение ролей завершено. Обновление интерфейса...\n"))
 
             if not self.cancel_event.is_set():
-                self.queue.put(("STATUS", "Готово"))
+                self.queue.put(("STATUS", "WORKER_DONE"))
                 self.queue.put(("PROGRESS", 1.0))
                 self._send_telemetry(device)
                 self.queue.put(("DONE", (self.transcribed_segments, diarization_result)))
@@ -253,10 +261,13 @@ class AudioProcessingWorker(threading.Thread):
             log_line = (f"[{timestamp}] Файл: {os.path.basename(self.audio_file)} | "
                         f"Диаризация: {self.use_diarization} | "
                         f"VAD: [onset={onset:.2f}, min_off={min_off:.2f}s, min_on={min_on:.2f}s] | "
-                        f"Время: {session_duration:.1f} сек | Статус: {session_status}\n")
+                        f"Время: {session_duration:.1f} сек | Status: {session_status}\n")
             
+            log_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            log_path = os.path.join(log_root, "Lexora", "lexora_runtime.log")
             try:
-                with open("lexora_runtime.log", "a", encoding="utf-8") as log_file:
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                with open(log_path, "a", encoding="utf-8") as log_file:
                     log_file.write(log_line)
             except Exception: pass
             
@@ -271,4 +282,123 @@ class AudioProcessingWorker(threading.Thread):
 
             if temp_wav_path and os.path.exists(temp_wav_path):
                 try: os.remove(temp_wav_path)
-                except: pass
+                except Exception: pass
+
+
+class SummaryWorker(threading.Thread):
+    def __init__(self, text_content, current_lang, task_queue, cancel_event):
+        super().__init__(daemon=True)
+        self.text_content = text_content
+        self.current_lang = current_lang
+        self.queue = task_queue
+        self.cancel_event = cancel_event
+        self.proc = None 
+
+    def run(self):
+        self.queue.put(("SUMMARY_STATUS", "STATUS_SUMMARY"))
+
+        if not os.path.exists(bootstrap.QWEN_MODEL_PATH):
+            self.queue.put(("SUMMARY_ERROR", f"Файл модели не найден по пути:\n{bootstrap.QWEN_MODEL_PATH}"))
+            return
+
+        if self.current_lang == "UK":
+            system_prompt = "Ти — професійний аналітик. Зроби стислий, структурований та інформативний підсумок (Summary) наступного тексту українською мовою. Використовуй марковані списки та виділяй головне."
+        elif self.current_lang == "EN":
+            system_prompt = "You are a professional analyst. Provide a concise, structured, and informative summary of the following transcript in English. Use bullet points and highlight key insights."
+        else:
+            system_prompt = "Ты — профессиональный аналитик. Сделай краткий, структурированный и информативный итог (Summary) следующего текста на русском языке. Используй маркированные списки и выделяй главное."
+
+        cpu_count = os.cpu_count() or 2
+        n_threads = max(1, min(cpu_count - 1, 4))
+
+        params = {
+            "model_path": bootstrap.QWEN_MODEL_PATH,
+            "system_prompt": system_prompt,
+            "user_text": self.text_content,
+            "n_threads": n_threads,
+            "n_ctx": SUMMARY_N_CTX,
+            "max_tokens": SUMMARY_MAX_TOKENS
+        }
+        input_payload = json.dumps(params, ensure_ascii=False)
+
+        # ВОТ ЭТА СТРОКА БЫЛА УТЕРЯНА (Возвращаем её на место):
+        engine_script = os.path.join(bootstrap.application_path, "summary_engine.py")
+
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        try:
+            self.proc = subprocess.Popen(
+                [sys.executable, engine_script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                env=env
+            )
+        except Exception:
+            self.queue.put(("SUMMARY_ERROR", f"Не удалось инициализировать изолированный процесс:\n{traceback.format_exc()}"))
+            return
+
+        try:
+            outs, errs = None, None
+            try:
+                outs, errs = self.proc.communicate(input=input_payload.encode('utf-8'), timeout=0.5)
+            except subprocess.TimeoutExpired:
+                while self.proc.poll() is None:
+                    if self.cancel_event and self.cancel_event.is_set():
+                        self.proc.kill()
+                        self.proc.wait()
+                        self.queue.put(("SUMMARY_ERROR", "Процесс ИИ-суммаризации был принудительно остановлен пользователем."))
+                        return
+                    try:
+                        outs, errs = self.proc.communicate(timeout=0.5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+
+            if outs is None: outs = b""
+            if errs is None: errs = b""
+
+            stdout_data = outs.decode('utf-8', errors='replace')
+            stderr_data = errs.decode('utf-8', errors='replace')
+
+        except Exception as e:
+            self.proc.kill()
+            self.proc.wait()
+            self.queue.put(("SUMMARY_ERROR", f"Критический сбой IPC: {str(e)}"))
+            return
+
+        if self.proc.returncode != 0:
+            self.queue.put((
+                "SUMMARY_ERROR",
+                f"ИИ-процесс завершился критическим сбоем системы (Exit Code: {self.proc.returncode}).\nСистемная ошибка:\n{stderr_data}"
+            ))
+            return
+
+        try:
+            valid_json_str = None
+            for line in reversed(stdout_data.strip().split('\n')):
+                line = line.strip()
+                if line.startswith('{') and line.endswith('}'):
+                    valid_json_str = line
+                    break
+                    
+            if not valid_json_str:
+                raise ValueError("JSON не найден в ответе процесса")
+                
+            result = json.loads(valid_json_str)
+            if result["status"] == "DONE":
+                self.queue.put(("SUMMARY_DONE", result["payload"]))
+            else:
+                self.queue.put(("SUMMARY_ERROR", result["payload"]))
+        except Exception:
+            self.queue.put((
+                "SUMMARY_ERROR",
+                f"Не удалось десериализовать ответ ИИ-процесса.\nСырой вывод stdout:\n{stdout_data}\nStderr:\n{stderr_data}"
+            ))
