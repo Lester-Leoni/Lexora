@@ -109,7 +109,8 @@ class LexoraApp(DnDCTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.title("Lexora v1.7.0")
+        # --- ФИКС ВИЗУАЛА: Очищенный эстетичный заголовок ---
+        self.title("Lexora Light")
         self.geometry("960x680")
         self.minsize(820, 600)
         self.resizable(True, True)
@@ -342,7 +343,11 @@ class LexoraApp(DnDCTk):
         self._refresh_history_ui()
 
     def _init_db(self):
-        self.db_path = "lexora_history.db"
+        # --- АРХИТЕКТУРНЫЙ ФИКС: Безопасное системное хранилище без прав админа ---
+        app_data_dir = os.path.join(os.environ["LOCALAPPDATA"], "Lexora")
+        os.makedirs(app_data_dir, exist_ok=True)
+        self.db_path = os.path.join(app_data_dir, "lexora_history.db")
+        
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA foreign_keys = ON;")
             conn.execute("""
@@ -818,20 +823,20 @@ class LexoraApp(DnDCTk):
                     device = self.last_device
                     vram_used = getattr(self, 'last_vram', 0.0)
                     if device == "cuda":
-                        self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CUDA')}: {vram_used:.2f} GB | Статус: {data}")
+                        self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CUDA')}: {vram_used:.2f} GB | Status: {data}")
                     else:
-                        self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CPU')} | Статус: {data}")
+                        self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CPU')} | Status: {data}")
                 else:
-                    self.telemetry_label.configure(text=f"Статус: {data}")
+                    self.telemetry_label.configure(text=f"Status: {data}")
             elif msg_type == "TELEMETRY":
                 vram_used, device = data
                 self.last_device = device
                 self.last_vram = vram_used
                 status_text = getattr(self, 'current_status_text', 'Обработка...')
                 if device == "cuda":
-                    self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CUDA')}: {vram_used:.2f} GB | Статус: {status_text}")
+                    self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CUDA')}: {vram_used:.2f} GB | Status: {status_text}")
                 else:
-                    self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CPU')} | Статус: {status_text}")
+                    self.telemetry_label.configure(text=f"{self.tr('TELEMETRY_CPU')} | Status: {status_text}")
             elif msg_type == "PROGRESS": self.progressbar.set(data)
             elif msg_type == "LOG": self.system_log_ui(data)
             elif msg_type == "SEGMENT":
@@ -998,8 +1003,9 @@ class LexoraApp(DnDCTk):
                     "text": processed_text
                 })
                 
+            # --- ФИКС МЕТАДАННЫХ: Чистое имя бренда для перфекционизма ---
             export_data = {
-                "program": "Lexora v1.7.0",
+                "program": "Lexora",
                 "export_timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "source_file": os.path.basename(self.current_audio_path) if self.current_audio_path else "unknown",
                 "segments": segments_data
